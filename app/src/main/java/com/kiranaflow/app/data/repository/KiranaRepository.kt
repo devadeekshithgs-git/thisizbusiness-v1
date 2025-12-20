@@ -20,6 +20,7 @@ import com.kiranaflow.app.sync.PendingSyncOp
 import com.kiranaflow.app.sync.SyncEntityType
 import com.kiranaflow.app.sync.SyncOpType
 import kotlinx.coroutines.flow.map
+import com.kiranaflow.app.util.BillOcrParser
 
 class KiranaRepository(private val db: KiranaDatabase) {
     private val itemDao = db.itemDao()
@@ -249,7 +250,11 @@ class KiranaRepository(private val db: KiranaDatabase) {
     
     // --- Actions ---
 
-    suspend fun addItem(item: ItemEntity) {
+    /**
+     * Insert item into Room and return a copy with the generated id.
+     * Kept as a separate method so UIs can create-and-use the new Item immediately (e.g., billing quick-add).
+     */
+    suspend fun addItemReturning(item: ItemEntity): ItemEntity {
         val id = itemDao.insertItem(item).toInt()
         runCatching {
             enqueue(
@@ -274,6 +279,11 @@ class KiranaRepository(private val db: KiranaDatabase) {
                 )
             )
         }
+        return item.copy(id = id)
+    }
+
+    suspend fun addItem(item: ItemEntity) {
+        addItemReturning(item)
     }
     
     suspend fun updateItem(item: ItemEntity) {
@@ -830,5 +840,135 @@ class KiranaRepository(private val db: KiranaDatabase) {
                 )
             )
         }
+    }
+
+    data class InventoryImportResult(
+        val added: Int,
+        val updated: Int,
+        val vendorId: Int? = null,
+        val vendorName: String? = null
+    )
+
+    /**
+     * Apply parsed vendor bill items to inventory:
+     * - Adds new products if they don't exist (by case-insensitive exact name)
+     * - Increases stock for existing products
+     * - Updates costPrice when available
+     * - Best-effort vendor linkage if vendor can be identified
+     */
+    suspend fun processVendorBill(parsed: BillOcrParser.ParsedBill): InventoryImportResult {
+        val vendorId = runCatching {
+            val v = parsed.vendor
+            val vName = v.name?.trim().orEmpty()
+            val vPhone = v.phone?.filter { it.isDigit() }?.takeLast(10).orEmpty()
+            if (vName.isBlank() || vPhone.length != 10) return@runCatching null
+            val existing = partyDao.findPartyByPhoneAndType(vPhone, "VENDOR")
+            if (existing != null) existing.id
+            else addVendor(vName, vPhone, v.gstNumber)?.id
+        }.getOrNull()
+
+        var added = 0
+        var updated = 0
+
+        for (it in parsed.items) {
+            val name = it.name.trim()
+            if (name.isBlank()) continue
+            val qty = it.qty
+            if (qty <= 0) continue
+
+            val existing = itemDao.getItemByName(name)
+            if (existing != null) {
+                val newStock = existing.stock + qty
+                val newCost = it.unitPrice ?: existing.costPrice
+                updateItem(
+                    existing.copy(
+                        stock = newStock,
+                        costPrice = newCost,
+                        vendorId = vendorId ?: existing.vendorId
+                    )
+                )
+                updated++
+            } else {
+                val unit = it.unitPrice ?: 0.0
+                addItemReturning(
+                    ItemEntity(
+                        name = name,
+                        price = unit, // default selling price = unit cost (can be edited later)
+                        stock = qty,
+                        category = "General",
+                        rackLocation = null,
+                        marginPercentage = 0.0,
+                        barcode = null,
+                        costPrice = unit,
+                        gstPercentage = null,
+                        reorderPoint = 10,
+                        vendorId = vendorId,
+                        imageUri = null,
+                        expiryDateMillis = null,
+                        isDeleted = false
+                    )
+                )
+                added++
+            }
+        }
+
+        return InventoryImportResult(
+            added = added,
+            updated = updated,
+            vendorId = vendorId,
+            vendorName = parsed.vendor.name
+        )
+    }
+
+    suspend fun processInventorySheetRows(rows: List<com.kiranaflow.app.util.InventorySheetParser.InventoryRow>): InventoryImportResult {
+        var added = 0
+        var updated = 0
+
+        for (r in rows) {
+            val name = r.name.trim()
+            if (name.isBlank()) continue
+            val delivered = (if (r.stock > 0) r.stock else r.qty).coerceAtLeast(0)
+
+            val existing = itemDao.getItemByName(name)
+            if (existing != null) {
+                val newStock = existing.stock + delivered
+                val newCost = r.costPrice ?: existing.costPrice
+                val newSell = r.sellPrice ?: existing.price
+                val newCat = r.category?.trim()?.ifBlank { null } ?: existing.category
+                updateItem(
+                    existing.copy(
+                        stock = newStock,
+                        costPrice = newCost,
+                        price = newSell,
+                        category = newCat
+                    )
+                )
+                updated++
+            } else {
+                val cost = r.costPrice ?: 0.0
+                val sell = r.sellPrice ?: cost
+                addItemReturning(
+                    ItemEntity(
+                        name = name,
+                        price = sell,
+                        stock = delivered,
+                        category = r.category?.trim()?.ifBlank { null } ?: "General",
+                        rackLocation = null,
+                        marginPercentage = 0.0,
+                        barcode = null,
+                        costPrice = cost,
+                        gstPercentage = null,
+                        reorderPoint = 10,
+                        vendorId = null,
+                        imageUri = null,
+                        expiryDateMillis = null,
+                        isDeleted = false
+                    )
+                )
+                added++
+            }
+        }
+
+        return InventoryImportResult(added = added, updated = updated)
     }
 }

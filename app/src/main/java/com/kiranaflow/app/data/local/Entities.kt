@@ -34,7 +34,8 @@ data class PartyEntity(
     val phone: String,
     val type: String, // "CUSTOMER" or "VENDOR"
     val gstNumber: String? = null,
-    val balance: Double = 0.0
+    val balance: Double = 0.0,
+    val openingDue: Double = 0.0
 )
 
 @Entity(tableName = "transactions")

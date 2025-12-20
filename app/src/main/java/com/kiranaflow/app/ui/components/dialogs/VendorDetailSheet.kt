@@ -23,6 +23,8 @@ import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaInput
 import com.kiranaflow.app.ui.components.TransactionCard
 import com.kiranaflow.app.ui.theme.*
+import com.kiranaflow.app.util.InputFilters
+import androidx.compose.ui.text.input.KeyboardType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -123,9 +125,10 @@ fun VendorDetailSheet(
             // Amount Input
             KiranaInput(
                 value = amountText,
-                onValueChange = { amountText = it },
+                onValueChange = { amountText = InputFilters.decimal(it) },
                 placeholder = "₹ Amount",
-                label = "AMOUNT"
+                label = "AMOUNT",
+                keyboardType = KeyboardType.Decimal
             )
 
             Spacer(modifier = Modifier.height(16.dp))

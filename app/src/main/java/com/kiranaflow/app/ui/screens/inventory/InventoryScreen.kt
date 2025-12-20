@@ -55,6 +55,12 @@ import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
 import com.kiranaflow.app.ui.components.ValleyTopBar
 import com.kiranaflow.app.ui.theme.*
+import com.kiranaflow.app.util.InputFilters
+import com.kiranaflow.app.util.OcrUtils
+import com.kiranaflow.app.util.BillOcrParser
+import com.kiranaflow.app.util.InventorySheetParser
+import androidx.compose.ui.text.input.KeyboardType
+import android.widget.Toast
 
 @Composable
 fun InventoryScreen(
@@ -65,6 +71,7 @@ fun InventoryScreen(
     viewModel: InventoryViewModel = viewModel()
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
     val items by viewModel.filteredItems.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -74,6 +81,8 @@ fun InventoryScreen(
     var selectionMode by remember { mutableStateOf(false) }
     var selectedItemIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var showBulkDeleteConfirm by remember { mutableStateOf(false) }
+    var showBillScanner by remember { mutableStateOf(false) }
+    var importBusy by remember { mutableStateOf(false) }
 
     LaunchedEffect(triggerAddItem) {
         if (triggerAddItem) {
@@ -168,10 +177,17 @@ fun InventoryScreen(
                             ) { Text("Cancel", fontWeight = FontWeight.Bold) }
                         }
                     } else {
-                        TextButton(onClick = { selectionMode = true }) {
-                            Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { showBillScanner = true }) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = TextSecondary)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Scan Bill", fontWeight = FontWeight.Bold, color = TextSecondary)
+                            }
+                            TextButton(onClick = { selectionMode = true }) {
+                                Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                            }
                         }
                     }
                 }
@@ -284,6 +300,51 @@ fun InventoryScreen(
         }
     }
 
+    if (showBillScanner) {
+        BillScannerScreen(
+            onDismiss = { showBillScanner = false },
+            onBillDocumentSelected = { uri ->
+                showBillScanner = false
+                val cr = context.contentResolver
+                scope.launch {
+                    if (importBusy) return@launch
+                    importBusy = true
+                    try {
+                        val text = OcrUtils.ocrFromUri(cr, uri)
+                        val parsed = BillOcrParser.parse(text)
+                        val res = repo.processVendorBill(parsed)
+                        Toast.makeText(
+                            context,
+                            "Imported: ${res.added} added, ${res.updated} updated",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        importBusy = false
+                    }
+                }
+            },
+            onInventoryFileSelected = { uri ->
+                showBillScanner = false
+                val cr = context.contentResolver
+                scope.launch {
+                    if (importBusy) return@launch
+                    importBusy = true
+                    try {
+                        val rows = InventorySheetParser.parse(cr, uri)
+                        val res = repo.processInventorySheetRows(rows)
+                        Toast.makeText(
+                            context,
+                            "Imported: ${res.added} added, ${res.updated} updated",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        importBusy = false
+                    }
+                }
+            }
+        )
+    }
+
     if (showBulkDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showBulkDeleteConfirm = false },
@@ -323,7 +384,7 @@ private fun InventoryItemCardSelectable(
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onClick() },
-                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+                modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
             )
         }
     }
@@ -448,6 +509,7 @@ fun AddItemDialog(
     var imageUri by remember { mutableStateOf<String?>(null) }
     var expiryDateMillis by remember { mutableStateOf<Long?>(null) }
     var showExpiryPicker by remember { mutableStateOf(false) }
+    var showNameError by remember { mutableStateOf(false) }
 
     var pendingCameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
@@ -492,7 +554,7 @@ fun AddItemDialog(
         }.distinct()
     }
     val filteredCategories = remember(normalizedCategories, categoryQuery) {
-        if (categoryQuery.isBlank()) categories
+        if (categoryQuery.isBlank()) normalizedCategories
         else normalizedCategories.filter { it.contains(categoryQuery, true) }
     }
 
@@ -590,6 +652,15 @@ fun AddItemDialog(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     KiranaInput(value = name, onValueChange = { name = it }, placeholder = "e.g. Basmati Rice 5kg", label = "Item Name")
+                    if (showNameError && name.trim().isBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Item name is required",
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     Spacer(modifier = Modifier.height(12.dp))
                     // Category dropdown (search + add new)
                     Text("CATEGORY", style = MaterialTheme.typography.labelSmall)
@@ -759,19 +830,54 @@ fun AddItemDialog(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        KiranaInput(value = costPrice, onValueChange = { costPrice = it }, placeholder = "0", label = "Cost Price (₹)", modifier = Modifier.weight(1f))
-                        KiranaInput(value = sellingPrice, onValueChange = { sellingPrice = it }, placeholder = "0", label = "Selling Price (₹)", modifier = Modifier.weight(1f))
+                        KiranaInput(
+                            value = costPrice,
+                            onValueChange = { costPrice = InputFilters.decimal(it) },
+                            placeholder = "0",
+                            label = "Cost Price (₹)",
+                            modifier = Modifier.weight(1f),
+                            keyboardType = KeyboardType.Decimal
+                        )
+                        KiranaInput(
+                            value = sellingPrice,
+                            onValueChange = { sellingPrice = InputFilters.decimal(it) },
+                            placeholder = "0",
+                            label = "Selling Price (₹)",
+                            modifier = Modifier.weight(1f),
+                            keyboardType = KeyboardType.Decimal
+                        )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        KiranaInput(value = stock, onValueChange = { stock = it }, placeholder = "0", label = "Stock", modifier = Modifier.weight(1f))
-                        KiranaInput(value = gst, onValueChange = { gst = it }, placeholder = "e.g. 18", label = "GST % (Optional)", modifier = Modifier.weight(1f))
+                        KiranaInput(
+                            value = stock,
+                            onValueChange = { stock = InputFilters.digitsOnly(it) },
+                            placeholder = "0",
+                            label = "Stock",
+                            modifier = Modifier.weight(1f),
+                            keyboardType = KeyboardType.Number
+                        )
+                        KiranaInput(
+                            value = gst,
+                            onValueChange = { gst = InputFilters.decimal(it, maxDecimals = 2) },
+                            placeholder = "e.g. 18",
+                            label = "GST % (Optional)",
+                            modifier = Modifier.weight(1f),
+                            keyboardType = KeyboardType.Decimal
+                        )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         // Location input added
                         KiranaInput(value = location, onValueChange = { location = it }, placeholder = "Rack A1", label = "Location", modifier = Modifier.weight(1f))
-                        KiranaInput(value = reorderPoint, onValueChange = { reorderPoint = it }, placeholder = "10", label = "Reorder Point", modifier = Modifier.weight(1f))
+                        KiranaInput(
+                            value = reorderPoint,
+                            onValueChange = { reorderPoint = InputFilters.digitsOnly(it) },
+                            placeholder = "10",
+                            label = "Reorder Point",
+                            modifier = Modifier.weight(1f),
+                            keyboardType = KeyboardType.Number
+                        )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Text("EXPIRY (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
@@ -821,8 +927,14 @@ fun AddItemDialog(
                     KiranaButton(
                         text = if (existingItem != null && existingItem.id != 0) "Save Changes" else "Save Product",
                         onClick = {
+                            val cleanName = name.trim()
+                            if (cleanName.isBlank()) {
+                                showNameError = true
+                                return@KiranaButton
+                            }
+                            showNameError = false
                             onSave(
-                                name,
+                                cleanName,
                                 category,
                                 costPrice.toDoubleOrNull() ?: 0.0,
                                 sellingPrice.toDoubleOrNull() ?: 0.0,
@@ -836,6 +948,7 @@ fun AddItemDialog(
                                 expiryDateMillis
                             )
                         },
+                        enabled = name.trim().isNotBlank(),
                         modifier = Modifier
                             .weight(1f)
                             .height(56.dp),
@@ -873,11 +986,16 @@ fun AddItemDialog(
             },
             dismissButton = { TextButton(onClick = { showExpiryPicker = false }) { Text("Cancel") } }
         ) {
-            DatePicker(state = pickerState, showModeToggle = false)
+            DatePicker(
+                state = pickerState,
+                showModeToggle = false,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 
     if (showAddVendorDialog) {
+        var addVendorPhoneError by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showAddVendorDialog = false },
             title = { Text("Add New Vendor", fontWeight = FontWeight.Bold) },
@@ -892,11 +1010,20 @@ fun AddItemDialog(
                     )
                     OutlinedTextField(
                         value = newVendorPhone,
-                        onValueChange = { newVendorPhone = it },
+                        onValueChange = { newVendorPhone = InputFilters.digitsOnly(it, maxLen = 10) },
                         label = { Text("Phone") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Phone)
                     )
+                    if (addVendorPhoneError) {
+                        Text(
+                            text = "Mobile number must be 10 digits",
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     OutlinedTextField(
                         value = newVendorGst,
                         onValueChange = { newVendorGst = it },
@@ -910,6 +1037,11 @@ fun AddItemDialog(
                 TextButton(
                     onClick = {
                         scope.launch {
+                            if (newVendorPhone.length != 10) {
+                                addVendorPhoneError = true
+                                return@launch
+                            }
+                            addVendorPhoneError = false
                             val created = onAddVendor(newVendorName, newVendorPhone, newVendorGst)
                             if (created != null) {
                                 selectedVendorId = created.id

@@ -116,6 +116,9 @@ dependencies {
 
     // ML Kit - Using legacy packaging workaround for 16KB page size compatibility
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
+    // OCR (vendor bill scanning)
+    implementation("com.google.mlkit:text-recognition:16.0.0")
+    implementation("com.google.mlkit:text-recognition-devanagari:16.0.0") // Hindi
 
     // Image loading (for product photos)
     implementation("io.coil-kt:coil-compose:2.5.0")

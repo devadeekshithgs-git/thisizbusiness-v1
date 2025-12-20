@@ -21,12 +21,14 @@ fun ShopSettingsDialog(
     shopName: String,
     ownerName: String,
     upiId: String,
+    whatsappReminderMessage: String,
     onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit
+    onSave: (String, String, String, String) -> Unit
 ) {
     var shopNameState by remember { mutableStateOf(shopName) }
     var ownerNameState by remember { mutableStateOf(ownerName) }
     var upiIdState by remember { mutableStateOf(upiId) }
+    var whatsappReminderState by remember { mutableStateOf(whatsappReminderMessage) }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -104,13 +106,22 @@ fun ShopSettingsDialog(
                     )
                 }
 
+                Spacer(modifier = Modifier.height(16.dp))
+
+                KiranaInput(
+                    value = whatsappReminderState,
+                    onValueChange = { whatsappReminderState = it },
+                    placeholder = "e.g. Namaste {name}, your due is ₹{due}. Please pay.",
+                    label = "WHATSAPP REMINDER MESSAGE"
+                )
+
                 Spacer(modifier = Modifier.height(24.dp))
 
                 // Save Button
                 KiranaButton(
                     text = "✓ Save Settings",
                     onClick = {
-                        onSave(shopNameState, ownerNameState, upiIdState)
+                        onSave(shopNameState, ownerNameState, upiIdState, whatsappReminderState)
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Blue600,

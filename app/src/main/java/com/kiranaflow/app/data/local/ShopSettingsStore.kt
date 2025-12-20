@@ -10,7 +10,8 @@ import kotlinx.coroutines.flow.map
 data class ShopSettings(
     val shopName: String,
     val ownerName: String,
-    val upiId: String
+    val upiId: String,
+    val whatsappReminderMessage: String
 )
 
 private val Context.shopSettingsDataStore by preferencesDataStore(name = "shop_settings")
@@ -20,13 +21,15 @@ class ShopSettingsStore(private val context: Context) {
         val shopName = stringPreferencesKey("shop_name")
         val ownerName = stringPreferencesKey("owner_name")
         val upiId = stringPreferencesKey("upi_id")
+        val whatsappReminderMessage = stringPreferencesKey("whatsapp_reminder_message")
     }
 
     val settings: Flow<ShopSettings> = context.shopSettingsDataStore.data.map { prefs ->
         ShopSettings(
             shopName = prefs[Keys.shopName].orEmpty(),
             ownerName = prefs[Keys.ownerName].orEmpty(),
-            upiId = prefs[Keys.upiId].orEmpty()
+            upiId = prefs[Keys.upiId].orEmpty(),
+            whatsappReminderMessage = prefs[Keys.whatsappReminderMessage].orEmpty()
         )
     }
 
@@ -35,6 +38,12 @@ class ShopSettingsStore(private val context: Context) {
             prefs[Keys.shopName] = shopName.trim()
             prefs[Keys.ownerName] = ownerName.trim()
             prefs[Keys.upiId] = upiId.trim()
+        }
+    }
+
+    suspend fun saveWhatsAppReminderMessage(message: String) {
+        context.shopSettingsDataStore.edit { prefs ->
+            prefs[Keys.whatsappReminderMessage] = message.trim()
         }
     }
 }

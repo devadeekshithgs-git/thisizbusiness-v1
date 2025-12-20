@@ -1,9 +1,7 @@
 package com.kiranaflow.app.ui.screens.parties
 
 import android.app.Application
-import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.net.Uri
 import android.provider.ContactsContract
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,6 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +41,7 @@ import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.local.ItemEntity
 import com.kiranaflow.app.data.local.PartyEntity
 import com.kiranaflow.app.data.local.TransactionEntity
+import com.kiranaflow.app.data.local.TransactionItemEntity
 import com.kiranaflow.app.data.local.ShopSettings
 import com.kiranaflow.app.data.local.ShopSettingsStore
 import com.kiranaflow.app.data.repository.KiranaRepository
@@ -52,8 +52,11 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.URLEncoder
 import java.util.Locale
+import com.kiranaflow.app.util.InputFilters
+import com.kiranaflow.app.util.WhatsAppHelper
+import java.text.SimpleDateFormat
+import java.util.Date
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.compose.foundation.rememberScrollState
@@ -95,6 +98,23 @@ class PartiesViewModel(application: Application) : AndroidViewModel(application)
     private val allTransactions: StateFlow<List<TransactionEntity>> = repository.allTransactions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val allTxItems: StateFlow<List<TransactionItemEntity>> = repository.allTransactionItems
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // transactionId -> line items
+    val transactionItemsByTransactionId: StateFlow<Map<Int, List<TransactionItemEntity>>> = allTxItems
+        .map { items -> items.groupBy { it.transactionId } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    // customerId -> recent transactions (sales + payments that reference customerId)
+    val customerTransactionsById: StateFlow<Map<Int, List<TransactionEntity>>> = allTransactions
+        .map { txs ->
+            txs.filter { it.customerId != null }
+                .groupBy { it.customerId!! }
+                .mapValues { (_, list) -> list.sortedByDescending { it.date }.take(50) }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
     // vendorId -> recent transactions (payments + sales/others that reference vendorId)
     val vendorTransactionsById: StateFlow<Map<Int, List<TransactionEntity>>> = allTransactions
         .map { txs ->
@@ -109,10 +129,26 @@ class PartiesViewModel(application: Application) : AndroidViewModel(application)
         .map { m -> m.mapNotNull { (k, v) -> v.firstOrNull()?.let { k to it } }.toMap() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
-    fun addParty(name: String, phone: String, type: String, gstNumber: String? = null) {
+    fun addParty(
+        name: String,
+        phone: String,
+        type: String,
+        gstNumber: String? = null,
+        openingDue: Double = 0.0
+    ) {
         viewModelScope.launch {
             // ID is auto-generated (Int)
-            repository.addParty(PartyEntity(name = name, phone = phone, type = type, gstNumber = gstNumber?.trim()?.ifBlank { null }, balance = 0.0))
+            val due = if (type == "CUSTOMER") openingDue.coerceAtLeast(0.0) else 0.0
+            repository.addParty(
+                PartyEntity(
+                    name = name,
+                    phone = phone,
+                    type = type,
+                    gstNumber = gstNumber?.trim()?.ifBlank { null },
+                    balance = due,
+                    openingDue = due
+                )
+            )
         }
     }
 
@@ -220,7 +256,7 @@ fun PartiesScreen(
 ) {
     val context = LocalContext.current
     val shopSettingsStore = remember(context) { ShopSettingsStore(context) }
-    val shopSettings by shopSettingsStore.settings.collectAsState(initial = ShopSettings("", "", ""))
+    val shopSettings by shopSettingsStore.settings.collectAsState(initial = ShopSettings("", "", "", ""))
 
     val list by if(type == "CUSTOMER") viewModel.filteredCustomers.collectAsState() else viewModel.filteredVendors.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -228,6 +264,8 @@ fun PartiesScreen(
     val lowStockItems by viewModel.lowStockItems.collectAsState()
     val lastVendorTxById by viewModel.lastVendorTransactionById.collectAsState()
     val vendorTxById by viewModel.vendorTransactionsById.collectAsState()
+    val customerTxById by viewModel.customerTransactionsById.collectAsState()
+    val txItemsByTxId by viewModel.transactionItemsByTransactionId.collectAsState()
     var showAddModal by remember { mutableStateOf(false) }
     var editingParty by remember { mutableStateOf<PartyEntity?>(null) }
     var deletingParty by remember { mutableStateOf<PartyEntity?>(null) }
@@ -235,6 +273,7 @@ fun PartiesScreen(
     var showPayablesDialog by remember { mutableStateOf(false) }
     var showReorderDialog by remember { mutableStateOf(false) }
     var historyParty by remember { mutableStateOf<PartyEntity?>(null) }
+    var customerDetailParty by remember { mutableStateOf<PartyEntity?>(null) }
     var recordDueParty by remember { mutableStateOf<PartyEntity?>(null) }
 
     // Contacts import state (customers only)
@@ -270,6 +309,7 @@ fun PartiesScreen(
     var newName by remember { mutableStateOf("") }
     var newPhone by remember { mutableStateOf("") }
     var newGst by remember { mutableStateOf("") }
+    var newOpeningDue by remember { mutableStateOf("") }
 
     Box(modifier = Modifier.fillMaxSize().background(GrayBg)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -454,7 +494,7 @@ fun PartiesScreen(
                                         .combinedClickable(
                                             onClick = {
                                                 if (selectionMode) onToggle()
-                                                else onOpenVendorDetail(party.id)
+                                                else customerDetailParty = party
                                             },
                                             onLongClick = {
                                                 if (!selectionMode) selectionMode = true
@@ -465,26 +505,18 @@ fun PartiesScreen(
                                     CustomerCard(
                                         customer = party,
                                         onRemind = { c ->
-                                    val phone = normalizeIndianPhone(c.phone)
-                                    val amount = kotlin.math.abs(c.balance).toInt()
-                                    val shop = shopSettings.shopName.ifBlank { "Kirana Store" }
-                                    val upiId = shopSettings.upiId.trim()
-                                    val upiLink = if (upiId.isNotBlank() && amount > 0) {
-                                        // Standard UPI deep link (works on most UPI apps). Keep it simple + robust.
-                                        // Note: WhatsApp will display this as a tappable link on most devices.
-                                        val pn = URLEncoder.encode(shop, "UTF-8")
-                                        "upi://pay?pa=$upiId&pn=$pn&am=$amount&cu=INR"
-                                    } else null
-                                    val msg = buildString {
-                                        append("Hi ${c.name}, your due amount is ₹$amount.\n")
-                                        append("Please pay at the earliest.\n")
-                                        if (!upiLink.isNullOrBlank()) {
-                                            append("\nPay via UPI: $upiLink\n")
-                                            append("(UPI ID: $upiId)\n")
-                                        }
-                                        append("\n- $shop")
-                                    }
-                                    openWhatsApp(context, phone, msg)
+                                            // Only remind for due customers.
+                                            if (c.balance <= 0) return@CustomerCard
+                                            val phone = WhatsAppHelper.normalizeIndianPhone(c.phone)
+                                            val amount = kotlin.math.abs(c.balance).toInt()
+                                            val msg = WhatsAppHelper.buildReminderMessage(
+                                                template = shopSettings.whatsappReminderMessage,
+                                                customerName = c.name,
+                                                dueAmountInr = amount,
+                                                shopName = shopSettings.shopName,
+                                                upiId = shopSettings.upiId
+                                            )
+                                            WhatsAppHelper.openWhatsApp(context, phone, msg)
                                         },
                                         onRecordPayment = { if (!selectionMode) payingParty = party },
                                         onEdit = { if (!selectionMode) editingParty = party },
@@ -532,6 +564,117 @@ fun PartiesScreen(
                 }
             }
         }
+    }
+
+    // Customer detail (Khata + purchase history), grouped by date.
+    if (customerDetailParty != null && type == "CUSTOMER") {
+        val c = customerDetailParty!!
+        val txns = customerTxById[c.id].orEmpty()
+        val dateFmt = remember { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()) }
+        val groups = remember(txns) {
+            txns.sortedByDescending { it.date }
+                .groupBy { dateFmt.format(Date(it.date)) }
+        }
+        AlertDialog(
+            onDismissRequest = { customerDetailParty = null },
+            title = { Text("${c.name} • Khata", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val due = c.balance
+                    Text(
+                        text = if (due > 0) "Due: ₹${due.toInt()}" else "No dues",
+                        fontWeight = FontWeight.Bold,
+                        color = if (due > 0) LossRed else TextSecondary
+                    )
+                    if (txns.isEmpty()) {
+                        Text("No history yet.", color = TextSecondary)
+                    } else {
+                        val scroll = rememberScrollState()
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 240.dp, max = 520.dp)
+                                .verticalScroll(scroll),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            groups.forEach { (day, listForDay) ->
+                                Text(day, fontWeight = FontWeight.Black, color = TextPrimary)
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    listForDay.forEach { t ->
+                                        val isSale = t.type == "SALE"
+                                        val isDueSale = isSale && t.paymentMode == "CREDIT"
+                                        Surface(
+                                            color = BgPrimary,
+                                            shape = RoundedCornerShape(14.dp),
+                                            tonalElevation = 2.dp
+                                        ) {
+                                            Column(modifier = Modifier.padding(12.dp)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = if (isSale) "Sale" else "Payment",
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = TextPrimary
+                                                    )
+                                                    Text(
+                                                        text = "₹${t.amount.toInt()}",
+                                                        fontWeight = FontWeight.Black,
+                                                        color = if (isSale) TextPrimary else ProfitGreen
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "${t.paymentMode} • ${t.time}",
+                                                        fontSize = 12.sp,
+                                                        color = TextSecondary
+                                                    )
+                                                    if (isSale) {
+                                                        Text(
+                                                            text = if (isDueSale) "DUE" else "PAID",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isDueSale) LossRed else ProfitGreen
+                                                        )
+                                                    }
+                                                }
+
+                                                if (isSale) {
+                                                    val lines = txItemsByTxId[t.id].orEmpty()
+                                                    if (lines.isNotEmpty()) {
+                                                        Spacer(modifier = Modifier.height(8.dp))
+                                                        lines.forEach { li ->
+                                                            Text(
+                                                                text = "• ${li.itemNameSnapshot} × ${li.qty}",
+                                                                fontSize = 12.sp,
+                                                                color = TextPrimary
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { payingParty = c; customerDetailParty = null }) { Text("Record Payment") }
+            },
+            dismissButton = {
+                TextButton(onClick = { customerDetailParty = null }) { Text("Close") }
+            }
+        )
     }
 
     if (showContactsImport && type == "CUSTOMER") {
@@ -704,6 +847,7 @@ fun PartiesScreen(
     }
 
     if (showAddModal) {
+        var addPhoneError by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showAddModal = false },
             title = { Text(if (type == "CUSTOMER") "Add Customer" else "Add Vendor", fontWeight = FontWeight.Bold) },
@@ -718,11 +862,20 @@ fun PartiesScreen(
                     )
                     OutlinedTextField(
                         value = newPhone,
-                        onValueChange = { newPhone = it },
+                        onValueChange = { newPhone = InputFilters.digitsOnly(it, maxLen = 10) },
                         label = { Text("Phone") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Phone)
                     )
+                    if (addPhoneError) {
+                        Text(
+                            text = "Mobile number must be 10 digits",
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     if (type != "CUSTOMER") {
                         OutlinedTextField(
                             value = newGst,
@@ -731,21 +884,38 @@ fun PartiesScreen(
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
+                    } else {
+                        OutlinedTextField(
+                            value = newOpeningDue,
+                            onValueChange = { newOpeningDue = InputFilters.decimal(it) },
+                            label = { Text("Opening Due (optional)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        )
                     }
                 }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
+                        if (newPhone.length != 10) {
+                            addPhoneError = true
+                            return@TextButton
+                        }
+                        addPhoneError = false
+                        val openingDue = if (type == "CUSTOMER") (newOpeningDue.toDoubleOrNull() ?: 0.0) else 0.0
                         viewModel.addParty(
                             name = newName,
                             phone = newPhone,
                             type = type,
-                            gstNumber = if (type == "CUSTOMER") null else newGst
+                            gstNumber = if (type == "CUSTOMER") null else newGst,
+                            openingDue = openingDue
                         )
                         newName = ""
                         newPhone = ""
                         newGst = ""
+                        newOpeningDue = ""
                         showAddModal = false
                     }
                 ) { Text("Add") }
@@ -761,13 +931,29 @@ fun PartiesScreen(
         var name by remember(party.id) { mutableStateOf(party.name) }
         var phone by remember(party.id) { mutableStateOf(party.phone) }
         var gst by remember(party.id) { mutableStateOf(party.gstNumber.orEmpty()) }
+        var editPhoneError by remember(party.id) { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { editingParty = null },
             title = { Text(if (type == "CUSTOMER") "Edit Customer" else "Edit Vendor", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("Phone") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = InputFilters.digitsOnly(it, maxLen = 10) },
+                        label = { Text("Phone") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Phone)
+                    )
+                    if (editPhoneError) {
+                        Text(
+                            text = "Mobile number must be 10 digits",
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     if (type != "CUSTOMER") {
                         OutlinedTextField(value = gst, onValueChange = { gst = it }, label = { Text("GST Number (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     }
@@ -775,6 +961,11 @@ fun PartiesScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
+                    if (phone.length != 10) {
+                        editPhoneError = true
+                        return@TextButton
+                    }
+                    editPhoneError = false
                     viewModel.updateParty(party, name, phone, if (type == "CUSTOMER") null else gst)
                     editingParty = null
                 }) { Text("Save") }
@@ -812,10 +1003,11 @@ fun PartiesScreen(
                     Text("${if (type == "CUSTOMER") "Due" else "You owe"}: ₹${kotlin.math.abs(customer.balance).toInt()}", fontWeight = FontWeight.Bold, color = TextPrimary)
                     OutlinedTextField(
                         value = amountText,
-                        onValueChange = { amountText = it },
+                        onValueChange = { amountText = InputFilters.decimal(it) },
                         label = { Text("Amount") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal)
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         FilterChip(
@@ -986,10 +1178,11 @@ fun PartiesScreen(
                     Text("Current payable: ₹${kotlin.math.abs(v.balance).toInt()}", fontWeight = FontWeight.Bold, color = LossRed)
                     OutlinedTextField(
                         value = amountText,
-                        onValueChange = { amountText = it },
+                        onValueChange = { amountText = InputFilters.decimal(it) },
                         label = { Text("Amount") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal)
                     )
                     OutlinedTextField(
                         value = note,
@@ -1103,13 +1296,17 @@ private fun CustomerCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                OutlinedButton(
-                    onClick = { onRemind(customer) },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(containerColor = Gray100, contentColor = TextPrimary),
-                    border = null
-                ) {
-                    Text("Remind", fontWeight = FontWeight.Bold)
+                if (due) {
+                    OutlinedButton(
+                        onClick = { onRemind(customer) },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(containerColor = Gray100, contentColor = TextPrimary),
+                        border = null
+                    ) {
+                        Text("Remind", fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1223,31 +1420,6 @@ private fun VendorCard(
                 }
             }
         }
-    }
-}
-
-private fun normalizeIndianPhone(raw: String): String {
-    val digits = raw.filter { it.isDigit() }
-    return when {
-        digits.startsWith("91") && digits.length >= 12 -> digits
-        digits.length == 10 -> "91$digits"
-        else -> digits
-    }
-}
-
-private fun openWhatsApp(context: android.content.Context, phoneWithCountryCode: String, message: String) {
-    val encoded = URLEncoder.encode(message, "UTF-8")
-    val url = "https://wa.me/$phoneWithCountryCode?text=$encoded"
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-    try {
-        context.startActivity(intent)
-    } catch (_: ActivityNotFoundException) {
-        // Fallback: open via generic share
-        val share = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, message)
-        }
-        context.startActivity(Intent.createChooser(share, "Send reminder"))
     }
 }
 

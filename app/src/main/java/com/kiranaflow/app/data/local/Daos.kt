@@ -11,6 +11,9 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE barcode = :barcode AND isDeleted = 0 LIMIT 1")
     suspend fun getItemByBarcode(barcode: String): ItemEntity?
 
+    @Query("SELECT * FROM items WHERE LOWER(name) = LOWER(:name) AND isDeleted = 0 LIMIT 1")
+    suspend fun getItemByName(name: String): ItemEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertItem(item: ItemEntity): Long
 
