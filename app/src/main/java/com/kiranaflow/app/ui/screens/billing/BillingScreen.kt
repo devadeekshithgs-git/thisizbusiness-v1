@@ -64,6 +64,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import java.util.Locale
 import java.io.File
+import com.kiranaflow.app.util.InputFilters
+import androidx.compose.ui.text.input.KeyboardType
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -84,7 +86,7 @@ fun BillingScreen(
     // Persisted shop settings (for UPI QR)
     val context = LocalContext.current
     val settingsStore = remember(context) { ShopSettingsStore(context) }
-    val shopSettings by settingsStore.settings.collectAsState(initial = ShopSettings("", "", ""))
+    val shopSettings by settingsStore.settings.collectAsState(initial = ShopSettings("", "", "", ""))
 
     // Stable repository for customer list + add-new-customer from payment modal
     val db = remember(context) { KiranaDatabase.getDatabase(context) }
@@ -100,6 +102,11 @@ fun BillingScreen(
     var showPriceEditDialog by remember { mutableStateOf(false) }
     var showTxnSavedOverlay by remember { mutableStateOf(false) }
     var screenMode by rememberSaveable { mutableStateOf("BILL") } // BILL | EXPENSE
+    var showQuickAddProduct by remember { mutableStateOf(false) }
+    var quickAddName by remember { mutableStateOf("") }
+    var quickAddPrice by remember { mutableStateOf("") }
+    var quickAddStock by remember { mutableStateOf("") }
+    var quickAddNameError by remember { mutableStateOf(false) }
 
     // Expense form state (A6)
     val vendors by repo.vendors.collectAsState(initial = emptyList())
@@ -355,7 +362,7 @@ fun BillingScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // Search Results Dropdown
-                if (searchResults.isNotEmpty() && searchQuery.isNotEmpty()) {
+                if (searchQuery.isNotEmpty()) {
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -363,18 +370,43 @@ fun BillingScreen(
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Column(modifier = Modifier.padding(8.dp)) {
-                            searchResults.take(5).forEach { item ->
+                            if (searchResults.isEmpty()) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
-                                            viewModel.addItemToBill(item, 1)
+                                            quickAddName = searchQuery.trim()
+                                            quickAddPrice = ""
+                                            quickAddStock = ""
+                                            quickAddNameError = false
+                                            showQuickAddProduct = true
                                         }
                                         .padding(12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
-                                    Text("₹${item.price.toInt()}", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    Icon(Icons.Default.Add, contentDescription = null, tint = KiranaGreen)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Add \"$searchQuery\" as new product",
+                                        modifier = Modifier.weight(1f),
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            } else {
+                                searchResults.take(5).forEach { item ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                viewModel.addItemToBill(item, 1)
+                                            }
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
+                                        Text("₹${item.price.toInt()}", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    }
                                 }
                             }
                         }
@@ -480,9 +512,10 @@ fun BillingScreen(
                 ) {
                     KiranaInput(
                         value = expenseAmount,
-                        onValueChange = { expenseAmount = it },
+                        onValueChange = { expenseAmount = InputFilters.decimal(it) },
                         placeholder = "0",
-                        label = "Amount (₹)"
+                        label = "Amount (₹)",
+                        keyboardType = KeyboardType.Decimal
                     )
 
                     // Receipt photo (optional)
@@ -744,19 +777,40 @@ fun BillingScreen(
 
                 // Add Vendor dialog (minimal)
                 if (showAddVendorDialog) {
+                    var addVendorPhoneError by remember { mutableStateOf(false) }
                     AlertDialog(
                         onDismissRequest = { showAddVendorDialog = false },
                         title = { Text("Add Vendor", fontWeight = FontWeight.Bold) },
                         text = {
                             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 OutlinedTextField(value = newVendorName, onValueChange = { newVendorName = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
-                                OutlinedTextField(value = newVendorPhone, onValueChange = { newVendorPhone = it }, label = { Text("Phone") }, modifier = Modifier.fillMaxWidth())
+                                OutlinedTextField(
+                                    value = newVendorPhone,
+                                    onValueChange = { newVendorPhone = InputFilters.digitsOnly(it, maxLen = 10) },
+                                    label = { Text("Phone") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                    singleLine = true
+                                )
+                                if (addVendorPhoneError) {
+                                    Text(
+                                        text = "Mobile number must be 10 digits",
+                                        color = LossRed,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
                                 OutlinedTextField(value = newVendorGst, onValueChange = { newVendorGst = it }, label = { Text("GST (optional)") }, modifier = Modifier.fillMaxWidth())
                             }
                         },
                         confirmButton = {
                             TextButton(onClick = {
                                 scope.launch {
+                                    if (newVendorPhone.length != 10) {
+                                        addVendorPhoneError = true
+                                        return@launch
+                                    }
+                                    addVendorPhoneError = false
                                     val created = repo.addVendor(newVendorName, newVendorPhone, newVendorGst)
                                     if (created != null) {
                                         selectedVendorId = created.id
@@ -838,11 +892,16 @@ fun BillingScreen(
         CompletePaymentModal(
             totalAmount = totalAmount,
             customers = customers,
+            shopName = shopSettings.shopName,
+            upiId = shopSettings.upiId,
             onDismiss = { showCheckoutDialog = false },
             onComplete = { customerId, paymentMethod ->
                 viewModel.completeBill(paymentMethod, customerId)
                 showCheckoutDialog = false
                 onCompletePayment()
+            },
+            onAddCustomer = { name, phone10 ->
+                repo.addCustomer(name, phone10)
             }
         )
     }
@@ -859,10 +918,11 @@ fun BillingScreen(
                     Text(item.item.name, color = TextSecondary, fontSize = 12.sp)
                     OutlinedTextField(
                         value = priceText,
-                        onValueChange = { priceText = it },
+                        onValueChange = { priceText = InputFilters.decimal(it) },
                         label = { Text("Unit price (₹)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedContainerColor = White,
                             unfocusedContainerColor = White,
@@ -908,23 +968,118 @@ fun BillingScreen(
         )
     }
 
+    if (showQuickAddProduct) {
+        AlertDialog(
+            onDismissRequest = { showQuickAddProduct = false },
+            title = { Text("Add New Product", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = quickAddName,
+                        onValueChange = { quickAddName = it; if (quickAddNameError) quickAddNameError = false },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (quickAddNameError) {
+                        Text(
+                            text = "Product name is required",
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    OutlinedTextField(
+                        value = quickAddPrice,
+                        onValueChange = { quickAddPrice = InputFilters.decimal(it) },
+                        label = { Text("Selling Price (₹)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                    )
+                    OutlinedTextField(
+                        value = quickAddStock,
+                        onValueChange = { quickAddStock = InputFilters.digitsOnly(it) },
+                        label = { Text("Stock") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                }
+            },
+            confirmButton = {
+                val scope = rememberCoroutineScope()
+                TextButton(onClick = {
+                    val name = quickAddName.trim()
+                    if (name.isBlank()) {
+                        quickAddNameError = true
+                        return@TextButton
+                    }
+                    val price = quickAddPrice.toDoubleOrNull() ?: 0.0
+                    val stock = quickAddStock.toIntOrNull() ?: 0
+                    scope.launch {
+                        val saved = repo.addItemReturning(
+                            ItemEntity(
+                                name = name,
+                                price = price,
+                                stock = stock,
+                                category = "General",
+                                rackLocation = null,
+                                marginPercentage = 0.0,
+                                barcode = null,
+                                costPrice = 0.0,
+                                gstPercentage = null,
+                                reorderPoint = 10,
+                                vendorId = null,
+                                imageUri = null,
+                                expiryDateMillis = null,
+                                isDeleted = false
+                            )
+                        )
+                        viewModel.addItemToBill(saved, 1)
+                        showQuickAddProduct = false
+                    }
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuickAddProduct = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (showTxnSavedOverlay) {
-        Box(
-            modifier = Modifier.fillMaxSize().padding(top = 22.dp),
-            contentAlignment = Alignment.TopCenter
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Soft scrim so it feels like a brief confirmation dialog (but auto-dismisses quickly).
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.18f))
+            )
             Surface(
-                color = ProfitGreen,
-                shape = RoundedCornerShape(16.dp),
-                tonalElevation = 6.dp
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp),
+                color = BgPrimary,
+                shape = RoundedCornerShape(18.dp),
+                tonalElevation = 8.dp
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
-                    Text("Transaction saved", color = Color.White, fontWeight = FontWeight.Bold)
+                    Surface(shape = CircleShape, color = ProfitGreenBg) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = ProfitGreen,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                    Column {
+                        Text("Transaction confirmed", color = TextPrimary, fontWeight = FontWeight.Black)
+                        Text("Saved successfully", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }

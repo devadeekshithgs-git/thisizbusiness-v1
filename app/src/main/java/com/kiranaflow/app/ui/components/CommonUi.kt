@@ -60,10 +60,12 @@ fun KiranaButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
+    enabled: Boolean = true,
     colors: ButtonColors = ButtonDefaults.buttonColors(containerColor = KiranaGreen, contentColor = White)
 ) {
     Button(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier
             .height(56.dp) // py-5 equivalent ish
             .fillMaxWidth(),
@@ -96,7 +98,12 @@ fun KiranaInput(
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
     label: String? = null,
-    keyboardType: androidx.compose.ui.text.input.KeyboardType = androidx.compose.ui.text.input.KeyboardType.Text
+    keyboardType: androidx.compose.ui.text.input.KeyboardType = androidx.compose.ui.text.input.KeyboardType.Text,
+    /**
+     * Optional UI-level filter for restricting input (e.g. digits-only, decimals).
+     * If provided, the filtered value is what gets propagated to [onValueChange].
+     */
+    inputFilter: ((String) -> String)? = null
 ) {
     Column(modifier = modifier) {
         if (label != null) {
@@ -129,7 +136,10 @@ fun KiranaInput(
             
             BasicTextField(
                 value = value,
-                onValueChange = onValueChange,
+                onValueChange = { raw ->
+                    val next = inputFilter?.invoke(raw) ?: raw
+                    onValueChange(next)
+                },
                 textStyle = TextStyle(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
@@ -457,15 +467,19 @@ fun CustomerCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    TextButton(onClick = onRemindClick) {
-                        Icon(
-                            Icons.Default.Message,
-                            contentDescription = null,
-                            tint = ProfitGreen,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Remind", color = ProfitGreen, fontSize = 12.sp)
+                    if (hasOverdue) {
+                        TextButton(onClick = onRemindClick) {
+                            Icon(
+                                Icons.Default.Message,
+                                contentDescription = null,
+                                tint = ProfitGreen,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Remind", color = ProfitGreen, fontSize = 12.sp)
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.width(1.dp))
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         Text("TOTAL SALES", fontSize = 10.sp, color = TextSecondary)
