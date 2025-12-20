@@ -50,12 +50,16 @@ import com.kiranaflow.app.ui.theme.KiranaTheme
 import com.kiranaflow.app.util.DebugLogger
 import com.kiranaflow.app.util.ConnectivityMonitor
 import com.kiranaflow.app.util.StubSyncEngine
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -113,7 +117,11 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            KiranaTheme { 
+            val context = this
+            val appPrefsStore = remember { AppPrefsStore(context) }
+            val appPrefs by appPrefsStore.prefs.collectAsState(initial = com.kiranaflow.app.data.local.AppPrefs())
+            
+            KiranaTheme(darkTheme = appPrefs.darkModeEnabled) { 
                 KiranaApp()
             }
         }
@@ -173,6 +181,55 @@ fun KiranaApp() {
     val repo = remember(ctx) { KiranaRepository(db) }
     val appPrefsStore = remember(ctx) { AppPrefsStore(ctx) }
     val syncEngine = remember(ctx) { StubSyncEngine(db, appPrefsStore) }
+    val reconnectMutex = remember { Mutex() }
+    val reconnectScope = rememberCoroutineScope()
+
+    fun requestNetworkBestEffort() {
+        runCatching {
+            val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return@runCatching
+            val req = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            // Best-effort: prompts Android to validate/bring up a network if possible.
+            val cb = object : ConnectivityManager.NetworkCallback() {}
+            cm.requestNetwork(req, cb)
+            reconnectScope.launch {
+                delay(3_000)
+                runCatching { cm.unregisterNetworkCallback(cb) }
+            }
+        }
+    }
+
+    fun startReconnectAndSyncRetry() {
+        reconnectScope.launch {
+            // Prevent stacking multiple retries if user taps repeatedly.
+            reconnectMutex.withLock {
+                var delayMs = 600L
+                while (true) {
+                    val isOnlineNow = runCatching { monitor.isOnline.first() }.getOrDefault(false)
+                    if (!isOnlineNow) {
+                        requestNetworkBestEffort()
+                    }
+
+                    val result = runCatching { syncEngine.syncOnce() }.getOrNull()
+                    val pending = runCatching { repo.pendingOutboxCount.first() }.getOrDefault(0)
+
+                    // Exit only when device is online and data sync is restored (no pending outbox ops).
+                    if (isOnlineNow && pending <= 0) break
+
+                    // Backoff. If sync can't run due to configuration, still retry but less aggressively.
+                    val msg = result?.message.orEmpty()
+                    val maxDelay = if (
+                        msg.contains("Backend URL not configured", ignoreCase = true) ||
+                        msg.contains("Cloud Sync is off", ignoreCase = true)
+                    ) 60_000L else 15_000L
+
+                    delay(delayMs.coerceAtMost(maxDelay))
+                    delayMs = (delayMs * 2).coerceAtMost(maxDelay)
+                }
+            }
+        }
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -346,7 +403,10 @@ fun KiranaApp() {
                     .padding(top = 12.dp)
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OfflineBanner(isOnlineFlow = monitor.isOnline)
+                    OfflineBanner(
+                        isOnlineFlow = monitor.isOnline,
+                        onReconnect = { startReconnectAndSyncRetry() }
+                    )
                     SyncStatusChip(isOnlineFlow = monitor.isOnline, pendingCountFlow = repo.pendingOutboxCount)
                 }
             }

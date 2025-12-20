@@ -17,7 +17,8 @@ data class AppPrefs(
     val deviceId: String? = null,
     val useRealBackend: Boolean = false,
     val lastSyncAttemptAtMillis: Long? = null,
-    val lastSyncMessage: String? = null
+    val lastSyncMessage: String? = null,
+    val darkModeEnabled: Boolean = false
 )
 
 private val Context.appPrefsDataStore by preferencesDataStore(name = "app_prefs")
@@ -31,6 +32,7 @@ class AppPrefsStore(private val context: Context) {
         val useRealBackend = booleanPreferencesKey("use_real_backend")
         val lastSyncAttemptAtMillis = longPreferencesKey("last_sync_attempt_at_millis")
         val lastSyncMessage = stringPreferencesKey("last_sync_message")
+        val darkModeEnabled = booleanPreferencesKey("dark_mode_enabled")
     }
 
     val prefs: Flow<AppPrefs> = context.appPrefsDataStore.data.map { p ->
@@ -41,7 +43,8 @@ class AppPrefsStore(private val context: Context) {
             deviceId = p[Keys.deviceId],
             useRealBackend = p[Keys.useRealBackend] ?: false,
             lastSyncAttemptAtMillis = p[Keys.lastSyncAttemptAtMillis],
-            lastSyncMessage = p[Keys.lastSyncMessage]
+            lastSyncMessage = p[Keys.lastSyncMessage],
+            darkModeEnabled = p[Keys.darkModeEnabled] ?: false
         )
     }
 
@@ -81,6 +84,10 @@ class AppPrefsStore(private val context: Context) {
             it[Keys.lastSyncAttemptAtMillis] = atMillis
             if (message.isNullOrBlank()) it.remove(Keys.lastSyncMessage) else it[Keys.lastSyncMessage] = message
         }
+    }
+
+    suspend fun setDarkModeEnabled(enabled: Boolean) {
+        context.appPrefsDataStore.edit { it[Keys.darkModeEnabled] = enabled }
     }
 }
 

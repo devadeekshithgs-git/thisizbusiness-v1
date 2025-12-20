@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -49,7 +51,7 @@ fun SettingsDrawer(
 ) {
     val context = LocalContext.current
     val store = remember(context) { ShopSettingsStore(context) }
-    val settings by store.settings.collectAsState(initial = ShopSettings("", "", ""))
+    val settings by store.settings.collectAsState(initial = ShopSettings("", "", "", ""))
     val appPrefsStore = remember(context) { AppPrefsStore(context) }
     val appPrefs by appPrefsStore.prefs.collectAsState(initial = AppPrefs())
     val db = remember(context) { KiranaDatabase.getDatabase(context) }
@@ -65,6 +67,7 @@ fun SettingsDrawer(
     var shopName by remember { mutableStateOf("") }
     var ownerName by remember { mutableStateOf("") }
     var upiId by remember { mutableStateOf("") }
+    var whatsappReminderMessage by remember { mutableStateOf("") }
 
     var showDemoConfirm by remember { mutableStateOf(false) }
     var pendingDemoEnabled by remember { mutableStateOf(false) }
@@ -78,6 +81,7 @@ fun SettingsDrawer(
             shopName = settings.shopName
             ownerName = settings.ownerName
             upiId = settings.upiId
+            whatsappReminderMessage = settings.whatsappReminderMessage
         }
     }
 
@@ -197,12 +201,21 @@ fun SettingsDrawer(
                                         placeholder = "e.g. 9876543210@upi"
                                     )
 
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    KiranaInput(
+                                        value = whatsappReminderMessage,
+                                        onValueChange = { whatsappReminderMessage = it },
+                                        placeholder = "e.g. Namaste {name}, your due is ₹{due}. Please pay.",
+                                        label = "WHATSAPP REMINDER MESSAGE"
+                                    )
+
                                     Spacer(modifier = Modifier.height(18.dp))
                                     KiranaButton(
                                         text = "✓ Save Settings",
                                         onClick = {
                                             scope.launch {
                                                 store.save(shopName, ownerName, upiId)
+                                                store.saveWhatsAppReminderMessage(whatsappReminderMessage)
                                                 onClose()
                                             }
                                         },
@@ -211,6 +224,37 @@ fun SettingsDrawer(
                                     Spacer(modifier = Modifier.height(18.dp))
                                 }
                             }
+                        }
+
+                        item { Divider(color = Gray200) }
+
+                        // Appearance settings (Dark Mode)
+                        item {
+                            ListItem(
+                                headlineContent = { Text("Appearance", fontWeight = FontWeight.Bold, color = TextPrimary) },
+                                leadingContent = { 
+                                    Icon(
+                                        if (appPrefs.darkModeEnabled) Icons.Default.DarkMode else Icons.Default.LightMode, 
+                                        contentDescription = null, 
+                                        tint = if (appPrefs.darkModeEnabled) Purple600 else AlertOrange
+                                    ) 
+                                },
+                                trailingContent = {
+                                    Switch(
+                                        checked = appPrefs.darkModeEnabled,
+                                        onCheckedChange = { enabled ->
+                                            scope.launch { appPrefsStore.setDarkModeEnabled(enabled) }
+                                        }
+                                    )
+                                },
+                                supportingContent = {
+                                    Text(
+                                        if (appPrefs.darkModeEnabled) "Dark mode enabled" else "Light mode enabled",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            )
                         }
 
                         item { Divider(color = Gray200) }
