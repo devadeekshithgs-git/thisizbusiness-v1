@@ -1,44 +1,54 @@
 package com.kiranaflow.app.ui.components.dialogs
 
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.kiranaflow.app.ui.components.KiranaButton
-import com.kiranaflow.app.ui.components.KiranaInput
 import com.kiranaflow.app.ui.theme.*
-import java.text.SimpleDateFormat
-import java.util.*
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun DateRangePickerDialog(
     onDismiss: () -> Unit,
     onApply: (Long, Long) -> Unit
 ) {
-    var startDateText by remember { mutableStateOf("") }
-    var endDateText by remember { mutableStateOf("") }
-    
-    val dateFormat = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault())
-    var startDateMillis by remember { mutableStateOf<Long?>(null) }
-    var endDateMillis by remember { mutableStateOf<Long?>(null) }
+    val pickerState = rememberDateRangePickerState()
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+                .fillMaxWidth(0.96f)
+                .heightIn(max = 720.dp)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .imePadding(),
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = BgPrimary)
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
+            Column(
+                modifier = Modifier
+                    .padding(18.dp)
+                    // Landscape-friendly: if the available height is tight, allow scrolling.
+                    .verticalScroll(rememberScrollState())
+            ) {
                 // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -60,22 +70,10 @@ fun DateRangePickerDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // Start Date
-                KiranaInput(
-                    value = startDateText,
-                    onValueChange = { startDateText = it },
-                    placeholder = "dd-mm-yyyy",
-                    label = "START DATE"
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // End Date
-                KiranaInput(
-                    value = endDateText,
-                    onValueChange = { endDateText = it },
-                    placeholder = "dd-mm-yyyy",
-                    label = "END DATE"
+                DateRangePicker(
+                    state = pickerState,
+                    showModeToggle = false,
+                    modifier = Modifier.fillMaxWidth()
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -84,16 +82,13 @@ fun DateRangePickerDialog(
                 KiranaButton(
                     text = "Apply Range",
                     onClick = {
-                        try {
-                            val start = dateFormat.parse(startDateText)?.time
-                            val end = dateFormat.parse(endDateText)?.time
-                            if (start != null && end != null && end >= start) {
-                                onApply(start, end)
-                            }
-                        } catch (e: Exception) {
-                            // Handle parse error
+                        val start = pickerState.selectedStartDateMillis
+                        val end = pickerState.selectedEndDateMillis
+                        if (start != null && end != null && end >= start) {
+                            onApply(start, end)
                         }
                     },
+                    enabled = pickerState.selectedStartDateMillis != null && pickerState.selectedEndDateMillis != null,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Blue600,
                         contentColor = BgPrimary

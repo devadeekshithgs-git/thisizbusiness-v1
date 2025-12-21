@@ -30,6 +30,12 @@ interface ItemDao {
     // Using Int ID
     @Query("UPDATE items SET stock = stock + :qty WHERE id = :itemId")
     suspend fun increaseStock(itemId: Int, qty: Int)
+
+    @Query("UPDATE items SET stockKg = stockKg - :qtyKg WHERE id = :itemId")
+    suspend fun decreaseStockKg(itemId: Int, qtyKg: Double)
+
+    @Query("UPDATE items SET stockKg = stockKg + :qtyKg WHERE id = :itemId")
+    suspend fun increaseStockKg(itemId: Int, qtyKg: Double)
 }
 
 @Dao
@@ -97,6 +103,17 @@ interface TransactionDao {
     suspend fun insertSale(transaction: TransactionEntity, items: List<TransactionItemEntity>): Int {
         val txId = insertTransaction(transaction)
         // We need to set the transactionId on items
+        val itemsWithId = items.map { it.copy(transactionId = txId.toInt()) }
+        insertTransactionItems(itemsWithId)
+        return txId.toInt()
+    }
+
+    /**
+     * Generic helper to insert a transaction with associated line-items (works for SALE/EXPENSE/etc).
+     */
+    @Transaction
+    suspend fun insertTransactionWithItems(transaction: TransactionEntity, items: List<TransactionItemEntity>): Int {
+        val txId = insertTransaction(transaction)
         val itemsWithId = items.map { it.copy(transactionId = txId.toInt()) }
         insertTransactionItems(itemsWithId)
         return txId.toInt()

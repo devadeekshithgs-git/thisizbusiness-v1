@@ -57,6 +57,7 @@ import com.kiranaflow.app.ui.components.ValleyTopBar
 import com.kiranaflow.app.ui.theme.*
 import com.kiranaflow.app.util.InputFilters
 import com.kiranaflow.app.util.OcrUtils
+import com.kiranaflow.app.util.BillExtractionPipeline
 import com.kiranaflow.app.util.BillOcrParser
 import com.kiranaflow.app.util.InventorySheetParser
 import androidx.compose.ui.text.input.KeyboardType
@@ -83,6 +84,7 @@ fun InventoryScreen(
     var showBulkDeleteConfirm by remember { mutableStateOf(false) }
     var showBillScanner by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
+    var purchaseDraft by remember { mutableStateOf<PurchaseDraft?>(null) }
 
     LaunchedEffect(triggerAddItem) {
         if (triggerAddItem) {
@@ -236,7 +238,7 @@ fun InventoryScreen(
                         showAddModal = false
                     }
                 },
-                onSave = { name, cat, cost, sell, stock, loc, barcode, gst, reorder, imageUri, vendorId, expiryMillis ->
+                onSave = { name, cat, cost, sell, isLoose, pricePerKg, stockKg, stock, loc, barcode, gst, reorder, imageUri, vendorId, expiryMillis ->
                     val id = editingItem?.id
                     viewModel.saveItem(
                         id = id,
@@ -244,6 +246,9 @@ fun InventoryScreen(
                         category = cat,
                         cost = cost,
                         sell = sell,
+                        isLoose = isLoose,
+                        pricePerKg = pricePerKg,
+                        stockKg = stockKg,
                         stock = stock,
                         location = loc,
                         barcode = barcode,
@@ -253,6 +258,9 @@ fun InventoryScreen(
                         vendorId = vendorId,
                         expiryDateMillis = expiryMillis
                     )
+                    runCatching {
+                        Toast.makeText(context, "Saved successfully", Toast.LENGTH_SHORT).show()
+                    }
                     if (returnToBilling) {
                         Log.d("InventoryNav", "Saved item from Billing flow -> return to Billing")
                         navController.currentBackStackEntry?.savedStateHandle?.remove<String>("return_to")
@@ -311,13 +319,20 @@ fun InventoryScreen(
                     importBusy = true
                     try {
                         val text = OcrUtils.ocrFromUri(cr, uri)
-                        val parsed = BillOcrParser.parse(text)
+                        val parsed = BillExtractionPipeline.extract(text)
                         val res = repo.processVendorBill(parsed)
                         Toast.makeText(
                             context,
                             "Imported: ${res.added} added, ${res.updated} updated",
                             Toast.LENGTH_LONG
                         ).show()
+                        // Offer to record this as a vendor purchase (so payables can show itemized dues).
+                        purchaseDraft = PurchaseDraft(
+                            parsed = parsed,
+                            receiptUri = uri.toString(),
+                            detectedVendorId = res.vendorId,
+                            detectedVendorName = res.vendorName ?: parsed.vendor.name
+                        )
                     } finally {
                         importBusy = false
                     }
@@ -363,6 +378,122 @@ fun InventoryScreen(
             }
         )
     }
+
+    purchaseDraft?.let { draft ->
+        RecordVendorBillPurchaseDialog(
+            draft = draft,
+            vendors = vendors,
+            onDismiss = { purchaseDraft = null },
+            onConfirm = { vendor, mode ->
+                scope.launch {
+                    runCatching {
+                        repo.recordVendorBillPurchaseWithItems(
+                            vendor = vendor,
+                            parsed = draft.parsed,
+                            mode = mode,
+                            receiptImageUri = draft.receiptUri
+                        )
+                        Toast.makeText(context, "Purchase recorded", Toast.LENGTH_SHORT).show()
+                    }.onFailure {
+                        Toast.makeText(context, "Could not record purchase", Toast.LENGTH_SHORT).show()
+                    }
+                    purchaseDraft = null
+                }
+            }
+        )
+    }
+}
+
+private data class PurchaseDraft(
+    val parsed: BillOcrParser.ParsedBill,
+    val receiptUri: String?,
+    val detectedVendorId: Int?,
+    val detectedVendorName: String?
+)
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun RecordVendorBillPurchaseDialog(
+    draft: PurchaseDraft,
+    vendors: List<PartyEntity>,
+    onDismiss: () -> Unit,
+    onConfirm: (PartyEntity, String) -> Unit
+) {
+    var mode by remember { mutableStateOf("CREDIT") } // default: Udhaar
+    var selectedVendorId by remember(draft.detectedVendorId) { mutableStateOf(draft.detectedVendorId) }
+
+    val selectedVendor = remember(vendors, selectedVendorId) { vendors.firstOrNull { it.id == selectedVendorId } }
+    val computedTotal = remember(draft.parsed) {
+        draft.parsed.items.sumOf { it.total ?: ((it.unitPrice ?: 0.0) * it.qty) }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Record vendor purchase?", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = draft.detectedVendorName?.let { "Detected vendor: $it" } ?: "Vendor not detected",
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+
+                // Vendor picker (simple)
+                var expanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
+                    OutlinedTextField(
+                        value = selectedVendor?.name ?: "Select vendor…",
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = White,
+                            unfocusedContainerColor = White,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+                    ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        vendors.forEach { v ->
+                            DropdownMenuItem(
+                                text = { Text(v.name) },
+                                onClick = {
+                                    selectedVendorId = v.id
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Total (estimated): ₹${computedTotal.toInt()}",
+                    fontWeight = FontWeight.Black,
+                    color = LossRed
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilterChip(selected = mode == "CREDIT", onClick = { mode = "CREDIT" }, label = { Text("Udhaar") })
+                    FilterChip(selected = mode == "CASH", onClick = { mode = "CASH" }, label = { Text("Cash") })
+                    FilterChip(selected = mode == "UPI", onClick = { mode = "UPI" }, label = { Text("UPI") })
+                }
+
+                Text(
+                    text = "This enables item-wise payables in the Total Payables screen.",
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedVendor != null && computedTotal > 0.0,
+                onClick = { selectedVendor?.let { onConfirm(it, mode) } }
+            ) { Text("Record") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Skip") } }
+    )
 }
 
 @Composable
@@ -374,28 +505,33 @@ private fun InventoryItemCardSelectable(
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        InventoryItemCard(item = item, onClick = onClick)
         if (selectionMode) {
+            // Checkbox sits to the LEFT, outside the card (requested).
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onClick() },
-                modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                modifier = Modifier.padding(end = 10.dp)
             )
         }
+        InventoryItemCard(
+            item = item,
+            modifier = Modifier
+                .weight(1f)
+                .combinedClickable(onClick = onClick, onLongClick = onLongPress)
+        )
     }
 }
 
 @Composable
 fun InventoryItemCard(
     item: ItemEntity,
-    onClick: () -> Unit
+    modifier: Modifier = Modifier
 ) {
-    KiranaCard(onClick = onClick) {
+    KiranaCard(modifier = modifier, onClick = null) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -470,7 +606,7 @@ fun Badge(text: String, color: Color, bg: Color) {
 @OptIn(ExperimentalMaterial3Api::class)
 fun AddItemDialog(
     onDismiss: () -> Unit,
-    onSave: (String, String, Double, Double, Int, String?, String?, Double?, Int?, String?, Int?, Long?) -> Unit,
+    onSave: (String, String, Double, Double, Boolean, Double, Double, Int, String?, String?, Double?, Int?, String?, Int?, Long?) -> Unit,
     onDelete: (ItemEntity) -> Unit,
     onScanBarcode: () -> Unit,
     scannedBarcode: String?,
@@ -494,6 +630,7 @@ fun AddItemDialog(
     var barcode by remember { mutableStateOf("") }
     var costPrice by remember { mutableStateOf("") }
     var sellingPrice by remember { mutableStateOf("") }
+    var isLoose by remember { mutableStateOf(false) }
     var stock by remember { mutableStateOf("") }
     var gst by remember { mutableStateOf("") }
     var selectedVendorId by remember { mutableStateOf<Int?>(null) }
@@ -534,8 +671,9 @@ fun AddItemDialog(
         category = item.category
         barcode = item.barcode ?: barcode
         costPrice = item.costPrice.toString()
-        sellingPrice = item.price.toString()
-        stock = item.stock.toString()
+        isLoose = item.isLoose
+        sellingPrice = if (item.isLoose) item.pricePerKg.toString() else item.price.toString()
+        stock = if (item.isLoose) item.stockKg.toString() else item.stock.toString()
         gst = item.gstPercentage?.toString().orEmpty()
         reorderPoint = item.reorderPoint.toString()
         location = item.rackLocation.orEmpty()
@@ -578,13 +716,29 @@ fun AddItemDialog(
         onConsumeOff()
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(
-            modifier = Modifier.fillMaxSize().padding(16.dp).imePadding(),
-            shape = RoundedCornerShape(24.dp),
-            color = White
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = BgPrimary,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
+            val sheetHeight = maxHeight * 0.94f
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(sheetHeight)
+                    .padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = White
+            ) {
+                Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -687,26 +841,24 @@ fun AddItemDialog(
                             expanded = showCategoryDropdown,
                             onDismissRequest = { showCategoryDropdown = false }
                         ) {
-                            DropdownMenuItem(
-                                text = {
-                                    OutlinedTextField(
-                                        value = categoryQuery,
-                                        onValueChange = { categoryQuery = it },
-                                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                                        placeholder = { Text("Search category...") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedContainerColor = White,
-                                            unfocusedContainerColor = White,
-                                            focusedTextColor = TextPrimary,
-                                            unfocusedTextColor = TextPrimary
-                                        )
+                            // Search header (must be focusable)
+                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                OutlinedTextField(
+                                    value = categoryQuery,
+                                    onValueChange = { categoryQuery = it },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                    placeholder = { Text("Search category...") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = White,
+                                        unfocusedContainerColor = White,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
                                     )
-                                },
-                                onClick = {},
-                                enabled = false
-                            )
+                                )
+                            }
+                            Divider(color = Gray200)
                             DropdownMenuItem(
                                 text = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -755,26 +907,24 @@ fun AddItemDialog(
                             expanded = showVendorDropdown,
                             onDismissRequest = { showVendorDropdown = false }
                         ) {
-                            DropdownMenuItem(
-                                text = {
-                                    OutlinedTextField(
-                                        value = vendorQuery,
-                                        onValueChange = { vendorQuery = it },
-                                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                                        placeholder = { Text("Search vendor...") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedContainerColor = White,
-                                            unfocusedContainerColor = White,
-                                            focusedTextColor = TextPrimary,
-                                            unfocusedTextColor = TextPrimary
-                                        )
+                            // Search header (must be focusable)
+                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                OutlinedTextField(
+                                    value = vendorQuery,
+                                    onValueChange = { vendorQuery = it },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                    placeholder = { Text("Search vendor...") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = White,
+                                        unfocusedContainerColor = White,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
                                     )
-                                },
-                                onClick = {},
-                                enabled = false
-                            )
+                                )
+                            }
+                            Divider(color = Gray200)
                             DropdownMenuItem(
                                 text = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -842,20 +992,37 @@ fun AddItemDialog(
                             value = sellingPrice,
                             onValueChange = { sellingPrice = InputFilters.decimal(it) },
                             placeholder = "0",
-                            label = "Selling Price (₹)",
+                            label = if (isLoose) "Price per KG (₹)" else "Selling Price (₹)",
                             modifier = Modifier.weight(1f),
                             keyboardType = KeyboardType.Decimal
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("LOOSE ITEM", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                            Text("Sold by weight (Kg)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        }
+                        Switch(
+                            checked = isLoose,
+                            onCheckedChange = { checked -> isLoose = checked }
                         )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         KiranaInput(
                             value = stock,
-                            onValueChange = { stock = InputFilters.digitsOnly(it) },
+                            onValueChange = {
+                                stock = if (isLoose) InputFilters.decimal(it, maxDecimals = 3) else InputFilters.digitsOnly(it)
+                            },
                             placeholder = "0",
-                            label = "Stock",
+                            label = if (isLoose) "Stock (kg)" else "Stock",
                             modifier = Modifier.weight(1f),
-                            keyboardType = KeyboardType.Number
+                            keyboardType = if (isLoose) KeyboardType.Decimal else KeyboardType.Number
                         )
                         KiranaInput(
                             value = gst,
@@ -938,7 +1105,10 @@ fun AddItemDialog(
                                 category,
                                 costPrice.toDoubleOrNull() ?: 0.0,
                                 sellingPrice.toDoubleOrNull() ?: 0.0,
-                                stock.toIntOrNull() ?: 0,
+                                isLoose,
+                                if (isLoose) (sellingPrice.toDoubleOrNull() ?: 0.0) else 0.0,
+                                if (isLoose) (stock.toDoubleOrNull() ?: 0.0) else 0.0,
+                                if (isLoose) 0 else (stock.toIntOrNull() ?: 0),
                                 location,
                                 barcode,
                                 gst.toDoubleOrNull(),
@@ -1087,3 +1257,5 @@ fun AddItemDialog(
         )
     }
 }
+}
+

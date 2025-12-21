@@ -318,8 +318,9 @@ fun TransactionCard(
     onClick: (() -> Unit)? = null
 ) {
     val isExpense = transaction.type == "EXPENSE"
-    val amountColor = if (isExpense) LossRed else ProfitGreen
-    val iconBg = if (isExpense) LossRedBg else ProfitGreenBg
+    val isDueSale = transaction.type == "SALE" && transaction.paymentMode == "CREDIT"
+    val amountColor = if (isExpense || isDueSale) LossRed else ProfitGreen
+    val iconBg = if (isExpense || isDueSale) LossRedBg else ProfitGreenBg
     val icon = if (isExpense) Icons.Default.TrendingDown else Icons.Default.TrendingUp
     
     KiranaCard(

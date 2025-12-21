@@ -86,6 +86,9 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
         category: String,
         cost: Double,
         sell: Double,
+        isLoose: Boolean = false,
+        pricePerKg: Double = 0.0,
+        stockKg: Double = 0.0,
         stock: Int,
         location: String?,
         barcode: String?,
@@ -97,7 +100,9 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
     ) {
         viewModelScope.launch {
             val cleanBarcode = barcode?.trim()?.ifBlank { null }
-            val margin = if (cost > 0) ((sell - cost) / cost * 100) else 0.0
+            val effectivePricePerKg = if (isLoose) pricePerKg.coerceAtLeast(0.0) else 0.0
+            val effectiveSell = if (isLoose) effectivePricePerKg else sell
+            val margin = if (cost > 0) ((effectiveSell - cost) / cost * 100) else 0.0
 
             repository.updateItem(
                 ItemEntity(
@@ -105,8 +110,11 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
                     name = name.trim(),
                     category = category.trim().ifBlank { "General" },
                     costPrice = cost,
-                    price = sell,
-                    stock = stock,
+                    price = effectiveSell,
+                    isLoose = isLoose,
+                    pricePerKg = effectivePricePerKg,
+                    stockKg = if (isLoose) stockKg.coerceAtLeast(0.0) else 0.0,
+                    stock = if (isLoose) 0 else stock,
                     rackLocation = location?.trim()?.ifBlank { null },
                     marginPercentage = margin,
                     barcode = cleanBarcode,

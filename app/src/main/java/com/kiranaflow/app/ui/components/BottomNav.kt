@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.min
 import com.kiranaflow.app.ui.theme.*
 
 data class NavItem(val id: String, val label: String, val icon: ImageVector)
@@ -93,13 +94,14 @@ fun KiranaBottomNav(
             val totalWidth = maxWidth
             val tabWidth = totalWidth / items.size
 
-            val circleSize = 52.dp
+            // Size the floating circle relative to tab width so the notch can reach Home/Expenses
+            // without clamping inward on smaller screens.
+            val circleSize = (tabWidth * 0.76f).coerceAtMost(52.dp).coerceAtLeast(44.dp)
             val circleRadius = circleSize / 2
-            // Keep notch behavior consistent at the edges (Home/Vendors) by sharing the same curve width
-            // for both the background notch and the indicator positioning.
-            // Width of the "valley" dip. Keep this comfortably wider than the floating circle diameter
-            // so the circle sits inside the notch without clipping.
-            val notchCurveWidth = 96.dp
+
+            // Width of the "valley" dip. Keep it <= tabWidth so the notch center can reach the
+            // first/last tab centers without being clamped by `halfCurve`.
+            val notchCurveWidth = (circleSize * 1.8f).coerceAtMost(tabWidth)
             val halfCurve = notchCurveWidth / 2
         
         // Center of item i
@@ -175,7 +177,7 @@ fun KiranaBottomNav(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .offset(x = indicatorOffset, y = (-34).dp)
+                    .offset(x = indicatorOffset, y = -(circleRadius + 8.dp))
                     .size(circleSize)
                     .shadow(12.dp, CircleShape, spotColor = selectedAccent.copy(alpha = 0.4f))
                     .clip(CircleShape)
@@ -193,7 +195,8 @@ fun KiranaBottomNav(
                     imageVector = selectedItem.icon,
                     contentDescription = selectedItem.label,
                     tint = Color.White,
-                    modifier = Modifier.size(26.dp)
+                    // Keep selected icon size consistent with non-selected icons.
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }

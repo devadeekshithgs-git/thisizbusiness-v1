@@ -2,6 +2,7 @@ package com.kiranaflow.app.ui.screens.vendors
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,6 +44,7 @@ fun VendorsScreen(
 ) {
     // Reuse PartiesViewModel to show vendors
     val vendors by viewModel.vendors.collectAsState()
+    val vendorTxById by viewModel.vendorTransactionsById.collectAsState()
     var selectedVendorId by remember { mutableStateOf<Int?>(null) }
 
     Column(
@@ -113,9 +115,29 @@ fun VendorsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(vendors) { vendor ->
-                    PartyCard(vendor)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedVendorId = vendor.id }
+                    ) {
+                        PartyCard(party = vendor)
+                    }
                 }
             }
+        }
+    }
+
+    selectedVendorId?.let { id ->
+        val vendor = vendors.firstOrNull { it.id == id }
+        if (vendor != null) {
+            VendorDetailSheet(
+                vendor = vendor,
+                transactions = vendorTxById[id].orEmpty(),
+                onDismiss = { selectedVendorId = null },
+                onSavePayment = { amount, method ->
+                    viewModel.recordVendorPayment(vendor, amount, method)
+                }
+            )
         }
     }
 }

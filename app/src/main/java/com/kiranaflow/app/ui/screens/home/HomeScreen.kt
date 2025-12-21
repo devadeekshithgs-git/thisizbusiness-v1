@@ -1,6 +1,8 @@
 package com.kiranaflow.app.ui.screens.home
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,7 +22,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -29,14 +33,20 @@ import com.kiranaflow.app.ui.components.*
 import com.kiranaflow.app.ui.components.dialogs.DateRangePickerDialog
 import com.kiranaflow.app.ui.theme.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.kiranaflow.app.data.local.ShopSettingsStore
 import com.kiranaflow.app.data.local.KiranaDatabase
+import com.kiranaflow.app.data.local.AppPrefs
+import com.kiranaflow.app.data.local.AppPrefsStore
 import com.kiranaflow.app.data.repository.KiranaRepository
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.text.NumberFormat
+import com.kiranaflow.app.util.Formatters
+import com.kiranaflow.app.util.BiometricAuth
+import androidx.compose.foundation.text.selection.SelectionContainer
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -62,14 +72,14 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
+    val appPrefsStore = remember(context) { AppPrefsStore(context) }
+    val appPrefs by appPrefsStore.prefs.collectAsState(initial = AppPrefs())
+    val unlocked = remember(appPrefs.privacyUnlockedUntilMillis) { appPrefs.privacyUnlockedUntilMillis > System.currentTimeMillis() }
+    val unlockDurationMs = 2 * 60 * 1000L
+    val clipboard = LocalClipboardManager.current
 
-    fun formatInr(value: Double): String {
-        // Indian-style grouping (e.g., 24,09,555) — used in the app elsewhere for ₹ amounts.
-        val nf = NumberFormat.getNumberInstance(Locale("en", "IN"))
-        nf.maximumFractionDigits = 0
-        nf.minimumFractionDigits = 0
-        return nf.format(kotlin.math.abs(value).toLong())
-    }
+    data class ExpandedPnl(val label: String, val amount: Double, val valueColor: Color)
+    var expandedPnl by remember { mutableStateOf<ExpandedPnl?>(null) }
 
     @Composable
     fun PnlCard(
@@ -81,7 +91,18 @@ fun HomeScreen(
         modifier: Modifier = Modifier
     ) {
         Card(
-            modifier = modifier.height(86.dp),
+            modifier = modifier
+                .height(86.dp)
+                .clickable {
+                    if (!unlocked) {
+                        scope.launch {
+                            val ok = BiometricAuth.authenticate(context, title = "Unlock amounts", subtitle = "Verify to view amounts")
+                            if (ok) appPrefsStore.setPrivacyUnlockedUntil(System.currentTimeMillis() + unlockDurationMs)
+                        }
+                    } else {
+                        expandedPnl = ExpandedPnl(label = label, amount = amount, valueColor = valueColor)
+                    }
+                },
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = bg),
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -103,13 +124,95 @@ fun HomeScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(4.dp))
+                    val raw = Formatters.formatInrCurrency(amount, fractionDigits = 0, useAbsolute = true)
+                    val display = if (unlocked) raw else Formatters.maskDigits(raw)
                     Text(
-                        text = "₹${formatInr(amount)}",
+                        text = display,
                         color = valueColor,
                         fontSize = 22.sp,
                         fontWeight = FontWeight.Black,
                         maxLines = 1
                     )
+                }
+            }
+        }
+    }
+
+    // Full-screen expanded amount viewer (for very large values).
+    expandedPnl?.let { exp ->
+        val raw = Formatters.formatInrCurrency(exp.amount, fractionDigits = 0, useAbsolute = true)
+        Dialog(
+            onDismissRequest = { expandedPnl = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = BgPrimary
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(exp.label, fontWeight = FontWeight.Black, fontSize = 20.sp, color = TextPrimary)
+                        IconButton(onClick = { expandedPnl = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = TextSecondary)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = White),
+                        shape = RoundedCornerShape(16.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            SelectionContainer {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = raw,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 34.sp,
+                                        color = exp.valueColor,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                OutlinedButton(
+                                    onClick = { clipboard.setText(AnnotatedString(raw)) },
+                                    shape = RoundedCornerShape(14.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Copy", fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = { expandedPnl = null },
+                                    shape = RoundedCornerShape(14.dp)
+                                ) {
+                                    Text("Close", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Text(
+                                text = "Tip: tap Revenue/Expense/Profit cards to expand.",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -487,7 +590,14 @@ fun HomeScreen(
             onDismissRequest = { showAddReminder = false },
             title = { Text("Add reminder", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .heightIn(max = 520.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     OutlinedTextField(
                         value = title,
                         onValueChange = { title = it },

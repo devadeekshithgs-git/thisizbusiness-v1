@@ -1,6 +1,8 @@
 package com.kiranaflow.app.ui.components.dialogs
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -34,11 +36,17 @@ fun ShopSettingsDialog(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(max = 720.dp)
                 .padding(16.dp),
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = BgPrimary)
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+            ) {
                 // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),

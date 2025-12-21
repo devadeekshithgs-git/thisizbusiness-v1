@@ -644,6 +644,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
                 itemId = item.id,
                 itemNameSnapshot = item.name,
                 qty = qty,
+                unit = if (item.isLoose) "GRAM" else "PCS",
                 price = item.price
             )
         }
@@ -651,7 +652,12 @@ class KiranaRepository(private val db: KiranaDatabase) {
         val txId = db.withTransaction {
             val id = transactionDao.insertSale(transaction, txItems)
             items.forEach { (item, qty) ->
-                itemDao.decreaseStock(item.id, qty)
+                if (item.isLoose) {
+                    // qty is grams; stock is stored in KG for loose items.
+                    itemDao.decreaseStockKg(item.id, qty / 1000.0)
+                } else {
+                    itemDao.decreaseStock(item.id, qty)
+                }
             }
             if (customerId != null && paymentMode == "CREDIT") {
                  partyDao.updateBalance(customerId, totalAmount)
@@ -667,6 +673,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
                             .put("itemId", it.id)
                             .put("name", it.name)
                             .put("qty", qty)
+                            .put("unit", if (it.isLoose) "GRAM" else "PCS")
                             .put("price", it.price)
                     )
                 }
@@ -970,5 +977,106 @@ class KiranaRepository(private val db: KiranaDatabase) {
         }
 
         return InventoryImportResult(added = added, updated = updated)
+    }
+
+    /**
+     * Record a vendor bill as an expense, optionally on Udhaar, with itemized line-items.
+     *
+     * Notes:
+     * - This does NOT change inventory (inventory is updated separately via [processVendorBill]).
+     * - If [mode] == CREDIT, it increases payables by decreasing vendor balance (more negative).
+     */
+    suspend fun recordVendorBillPurchaseWithItems(
+        vendor: PartyEntity,
+        parsed: BillOcrParser.ParsedBill,
+        mode: String,
+        receiptImageUri: String? = null
+    ): Int? {
+        if (vendor.type != "VENDOR") return null
+        val lines = parsed.items
+            .mapNotNull { it.toPurchaseLineOrNull() }
+            .ifEmpty { return null }
+
+        val amount = lines.sumOf { it.lineTotal }
+        if (amount <= 0.0) return null
+
+        val now = System.currentTimeMillis()
+        val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(now))
+        val title = "Vendor Bill • ${vendor.name} ($mode)"
+
+        // Map to transaction_items for history display.
+        val txItems: List<TransactionItemEntity> = lines.map { li ->
+            TransactionItemEntity(
+                transactionId = 0,
+                itemId = li.itemId,
+                itemNameSnapshot = li.name,
+                qty = li.qty,
+                unit = li.unit,
+                price = li.unitPrice
+            )
+        }
+
+        val tx = TransactionEntity(
+            title = title,
+            type = "EXPENSE",
+            amount = amount,
+            date = now,
+            time = timeStr,
+            customerId = null,
+            vendorId = vendor.id,
+            paymentMode = mode,
+            receiptImageUri = receiptImageUri?.trim()?.ifBlank { null }
+        )
+
+        val deltaBalance = if (mode == "CREDIT") -amount else 0.0
+
+        val txId = db.withTransaction {
+            val id = transactionDao.insertTransactionWithItems(tx, txItems)
+            if (deltaBalance != 0.0) {
+                partyDao.updateBalance(vendor.id, deltaBalance)
+            }
+            id
+        }
+
+        return txId
+    }
+
+    private data class PurchaseLine(
+        val itemId: Int?,
+        val name: String,
+        val qty: Int,
+        val unit: String,
+        val unitPrice: Double,
+        val lineTotal: Double
+    )
+
+    private suspend fun BillOcrParser.ParsedBillItem.toPurchaseLineOrNull(): PurchaseLine? {
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) return null
+        val qtyInt = qty
+        if (qtyInt <= 0) return null
+        val unitPrice = unitPrice ?: run {
+            val t = total
+            if (t != null && qtyInt > 0) t / qtyInt else null
+        } ?: return null
+        val lineTotal = total ?: (unitPrice * qtyInt)
+        if (lineTotal <= 0.0) return null
+
+        val unitNorm = when (unit?.uppercase()) {
+            "KG" -> "KG"
+            "G" -> "G"
+            "GRAM" -> "G"
+            else -> "PCS"
+        }
+
+        val itemId = runCatching { itemDao.getItemByName(cleanName)?.id }.getOrNull()
+        return PurchaseLine(
+            itemId = itemId,
+            name = cleanName,
+            qty = qtyInt,
+            unit = unitNorm,
+            unitPrice = unitPrice,
+            lineTotal = lineTotal
+        )
     }
 }

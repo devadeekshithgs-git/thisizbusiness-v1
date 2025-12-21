@@ -43,8 +43,17 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     // Keep searchResults as alias, add searchItems
     val searchItems: StateFlow<List<ItemEntity>> = searchResults
 
+    private fun lineTotal(item: ItemEntity, qty: Int): Double {
+        return if (item.isLoose) {
+            val kg = qty / 1000.0
+            item.pricePerKg * kg
+        } else {
+            item.price * qty
+        }
+    }
+
     val totalAmount: StateFlow<Double> = _billItems.map { list ->
-        list.sumOf { it.item.price * it.qty }
+        list.sumOf { lineTotal(it.item, it.qty) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
     
     // Keep cartTotal as alias for backward compatibility
@@ -65,11 +74,12 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     fun addItemToBill(item: ItemEntity, quantity: Int = 1) {
         val currentList = _billItems.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.item.id == item.id }
+        val effectiveQty = if (item.isLoose && quantity == 1) 250 else quantity // default 250g
         if (existingIndex != -1) {
             val existing = currentList[existingIndex]
-            currentList[existingIndex] = existing.copy(qty = existing.qty + quantity)
+            currentList[existingIndex] = existing.copy(qty = existing.qty + effectiveQty)
         } else {
-            currentList.add(BoxCartItem(item, quantity))
+            currentList.add(BoxCartItem(item, effectiveQty))
         }
         _billItems.value = currentList
         _searchQuery.value = "" // clear search
@@ -107,7 +117,11 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
         if (index == -1) return
 
         val existing = currentList[index]
-        val updatedItem = existing.item.copy(price = newUnitPrice)
+        val updatedItem = if (existing.item.isLoose) {
+            existing.item.copy(pricePerKg = newUnitPrice, price = newUnitPrice)
+        } else {
+            existing.item.copy(price = newUnitPrice)
+        }
         currentList[index] = existing.copy(item = updatedItem)
         _billItems.value = currentList
 
@@ -122,7 +136,7 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     fun completeBill(paymentMode: String, customerId: Int? = null) {
         viewModelScope.launch {
             val items = _billItems.value.map { it.item to it.qty }
-            val total = _billItems.value.sumOf { it.item.price * it.qty }
+            val total = _billItems.value.sumOf { lineTotal(it.item, it.qty) }
             repository.processSale(items, paymentMode, customerId, total)
             _billItems.value = emptyList()
             _billSavedEvents.tryEmit(Unit)

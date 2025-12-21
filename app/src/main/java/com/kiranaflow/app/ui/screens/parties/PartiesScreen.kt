@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,6 +50,8 @@ import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.ui.components.*
 import androidx.compose.material.icons.outlined.Settings
 import com.kiranaflow.app.ui.theme.*
+import com.kiranaflow.app.ui.components.dialogs.CustomerDetailSheet
+import com.kiranaflow.app.ui.components.dialogs.VendorDetailSheet
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +67,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.window.Dialog
+import com.kiranaflow.app.util.Formatters
 
 class PartiesViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = KiranaRepository(KiranaDatabase.getDatabase(application))
@@ -92,7 +97,12 @@ class PartiesViewModel(application: Application) : AndroidViewModel(application)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val lowStockItems: StateFlow<List<ItemEntity>> = allItems
-        .map { items -> items.filter { it.stock < it.reorderPoint }.sortedBy { it.stock } }
+        .map { items ->
+            fun stockFor(item: ItemEntity): Double = if (item.isLoose) item.stockKg else item.stock.toDouble()
+            items
+                .filter { stockFor(it) < it.reorderPoint.toDouble() }
+                .sortedBy { stockFor(it) }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val allTransactions: StateFlow<List<TransactionEntity>> = repository.allTransactions
@@ -273,7 +283,9 @@ fun PartiesScreen(
     var showPayablesDialog by remember { mutableStateOf(false) }
     var showReorderDialog by remember { mutableStateOf(false) }
     var historyParty by remember { mutableStateOf<PartyEntity?>(null) }
-    var customerDetailParty by remember { mutableStateOf<PartyEntity?>(null) }
+    // Store IDs (not entity snapshots) so balance/fields update live while sheets are open.
+    var customerDetailPartyId by remember { mutableStateOf<Int?>(null) }
+    var vendorDetailPartyId by remember { mutableStateOf<Int?>(null) }
     var recordDueParty by remember { mutableStateOf<PartyEntity?>(null) }
 
     // Contacts import state (customers only)
@@ -337,7 +349,13 @@ fun PartiesScreen(
                    ) {
                        Column(modifier = Modifier.padding(24.dp)) {
                            Text("TOTAL RECEIVABLES", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = KiranaGreenLight, letterSpacing = 1.sp)
-                           Text("₹${totalDue.toInt()}", fontSize = 36.sp, fontWeight = FontWeight.Black, color = White)
+                           val rawDue = Formatters.formatInrCurrency(totalDue, fractionDigits = 0, useAbsolute = true)
+                           Text(
+                               rawDue,
+                               fontSize = 36.sp,
+                               fontWeight = FontWeight.Black,
+                               color = White
+                           )
                            Text("Money pending from market", fontSize = 12.sp, color = KiranaGreenLight)
                        }
                    }
@@ -413,7 +431,13 @@ fun PartiesScreen(
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text("TOTAL PAYABLES", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
                                 Spacer(modifier = Modifier.height(6.dp))
-                                Text("₹${totalPayables.toInt()}", fontSize = 22.sp, fontWeight = FontWeight.Black, color = LossRed)
+                                val rawPayables = Formatters.formatInrCurrency(totalPayables, fractionDigits = 0, useAbsolute = true)
+                                Text(
+                                    rawPayables,
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = LossRed
+                                )
                             }
                         }
                         Card(
@@ -494,7 +518,7 @@ fun PartiesScreen(
                                         .combinedClickable(
                                             onClick = {
                                                 if (selectionMode) onToggle()
-                                                else customerDetailParty = party
+                                                else customerDetailPartyId = party.id
                                             },
                                             onLongClick = {
                                                 if (!selectionMode) selectionMode = true
@@ -542,7 +566,7 @@ fun PartiesScreen(
                                         .combinedClickable(
                                             onClick = {
                                                 if (selectionMode) onToggle()
-                                                else onOpenVendorDetail(party.id)
+                                                else vendorDetailPartyId = party.id
                                             },
                                             onLongClick = {
                                                 if (!selectionMode) selectionMode = true
@@ -566,115 +590,34 @@ fun PartiesScreen(
         }
     }
 
-    // Customer detail (Khata + purchase history), grouped by date.
-    if (customerDetailParty != null && type == "CUSTOMER") {
-        val c = customerDetailParty!!
-        val txns = customerTxById[c.id].orEmpty()
-        val dateFmt = remember { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()) }
-        val groups = remember(txns) {
-            txns.sortedByDescending { it.date }
-                .groupBy { dateFmt.format(Date(it.date)) }
-        }
-        AlertDialog(
-            onDismissRequest = { customerDetailParty = null },
-            title = { Text("${c.name} • Khata", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    val due = c.balance
-                    Text(
-                        text = if (due > 0) "Due: ₹${due.toInt()}" else "No dues",
-                        fontWeight = FontWeight.Bold,
-                        color = if (due > 0) LossRed else TextSecondary
-                    )
-                    if (txns.isEmpty()) {
-                        Text("No history yet.", color = TextSecondary)
-                    } else {
-                        val scroll = rememberScrollState()
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 240.dp, max = 520.dp)
-                                .verticalScroll(scroll),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            groups.forEach { (day, listForDay) ->
-                                Text(day, fontWeight = FontWeight.Black, color = TextPrimary)
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listForDay.forEach { t ->
-                                        val isSale = t.type == "SALE"
-                                        val isDueSale = isSale && t.paymentMode == "CREDIT"
-                                        Surface(
-                                            color = BgPrimary,
-                                            shape = RoundedCornerShape(14.dp),
-                                            tonalElevation = 2.dp
-                                        ) {
-                                            Column(modifier = Modifier.padding(12.dp)) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(
-                                                        text = if (isSale) "Sale" else "Payment",
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = TextPrimary
-                                                    )
-                                                    Text(
-                                                        text = "₹${t.amount.toInt()}",
-                                                        fontWeight = FontWeight.Black,
-                                                        color = if (isSale) TextPrimary else ProfitGreen
-                                                    )
-                                                }
-                                                Spacer(modifier = Modifier.height(2.dp))
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(
-                                                        text = "${t.paymentMode} • ${t.time}",
-                                                        fontSize = 12.sp,
-                                                        color = TextSecondary
-                                                    )
-                                                    if (isSale) {
-                                                        Text(
-                                                            text = if (isDueSale) "DUE" else "PAID",
-                                                            fontSize = 11.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = if (isDueSale) LossRed else ProfitGreen
-                                                        )
-                                                    }
-                                                }
-
-                                                if (isSale) {
-                                                    val lines = txItemsByTxId[t.id].orEmpty()
-                                                    if (lines.isNotEmpty()) {
-                                                        Spacer(modifier = Modifier.height(8.dp))
-                                                        lines.forEach { li ->
-                                                            Text(
-                                                                text = "• ${li.itemNameSnapshot} × ${li.qty}",
-                                                                fontSize = 12.sp,
-                                                                color = TextPrimary
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+    // Customer detail: use the same bottom-sheet interaction as Vendor (swipe-down to dismiss).
+    customerDetailPartyId?.let { id ->
+        if (type == "CUSTOMER") {
+            val c = customers.firstOrNull { it.id == id } ?: return@let
+            CustomerDetailSheet(
+                customer = c,
+                transactions = customerTxById[c.id].orEmpty(),
+                onDismiss = { customerDetailPartyId = null },
+                onSavePayment = { amount, method ->
+                    viewModel.recordCustomerPayment(c, amount, method)
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { payingParty = c; customerDetailParty = null }) { Text("Record Payment") }
-            },
-            dismissButton = {
-                TextButton(onClick = { customerDetailParty = null }) { Text("Close") }
-            }
-        )
+            )
+        }
+    }
+
+    // Vendor detail sheet (transaction history + payment) - always resolve latest vendor from flow.
+    vendorDetailPartyId?.let { id ->
+        if (type == "VENDOR") {
+            val v = list.firstOrNull { it.id == id } ?: return@let
+            VendorDetailSheet(
+                vendor = v,
+                transactions = vendorTxById[v.id].orEmpty(),
+                onDismiss = { vendorDetailPartyId = null },
+                onSavePayment = { amount, method ->
+                    viewModel.recordVendorPayment(v, amount, method)
+                }
+            )
+        }
     }
 
     if (showContactsImport && type == "CUSTOMER") {
@@ -852,7 +795,14 @@ fun PartiesScreen(
             onDismissRequest = { showAddModal = false },
             title = { Text(if (type == "CUSTOMER") "Add Customer" else "Add Vendor", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .heightIn(max = 520.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     OutlinedTextField(
                         value = newName,
                         onValueChange = { newName = it },
@@ -936,7 +886,14 @@ fun PartiesScreen(
             onDismissRequest = { editingParty = null },
             title = { Text(if (type == "CUSTOMER") "Edit Customer" else "Edit Vendor", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .heightIn(max = 520.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(
                         value = phone,
@@ -998,9 +955,20 @@ fun PartiesScreen(
             onDismissRequest = { payingParty = null },
             title = { Text(if (type == "CUSTOMER") "Record Payment" else "Pay Vendor", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Text("${if (type == "CUSTOMER") "Customer" else "Vendor"}: ${customer.name}", color = TextSecondary, fontSize = 12.sp)
-                    Text("${if (type == "CUSTOMER") "Due" else "You owe"}: ₹${kotlin.math.abs(customer.balance).toInt()}", fontWeight = FontWeight.Bold, color = TextPrimary)
+                    Text(
+                        "${if (type == "CUSTOMER") "Due" else "You owe"}: ${Formatters.formatInrCurrency(customer.balance, fractionDigits = 0, useAbsolute = true)}",
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
                     OutlinedTextField(
                         value = amountText,
                         onValueChange = { amountText = InputFilters.decimal(it) },
@@ -1066,7 +1034,11 @@ fun PartiesScreen(
                                     }
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("₹${kotlin.math.abs(v.balance).toInt()}", fontWeight = FontWeight.Bold, color = LossRed)
+                                    Text(
+                                        Formatters.formatInrCurrency(v.balance, fractionDigits = 0, useAbsolute = true),
+                                        fontWeight = FontWeight.Bold,
+                                        color = LossRed
+                                    )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     TextButton(onClick = { payingParty = v; showPayablesDialog = false }) { Text("Pay") }
                                     TextButton(onClick = { historyParty = v; showPayablesDialog = false }) { Text("History") }
@@ -1089,7 +1061,11 @@ fun PartiesScreen(
             title = { Text("${v.name} • History", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Payable: ₹${kotlin.math.abs(v.balance).toInt()}", fontWeight = FontWeight.Bold, color = LossRed)
+                    Text(
+                        "Payable: ${Formatters.formatInrCurrency(v.balance, fractionDigits = 0, useAbsolute = true)}",
+                        fontWeight = FontWeight.Bold,
+                        color = LossRed
+                    )
                     if (txns.isEmpty()) {
                         Text("No transactions recorded yet.", color = TextSecondary)
                     } else {
@@ -1104,7 +1080,7 @@ fun PartiesScreen(
                                     Text("${t.paymentMode} • ${t.time}", fontSize = 12.sp, color = TextSecondary)
                                 }
                                 Text(
-                                    "₹${t.amount.toInt()}",
+                                    Formatters.formatInrCurrency(t.amount, fractionDigits = 0, useAbsolute = true),
                                     fontWeight = FontWeight.Bold,
                                     color = if (t.type == "EXPENSE") LossRed else TextPrimary
                                 )
@@ -1175,7 +1151,11 @@ fun PartiesScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Vendor: ${v.name}", color = TextSecondary, fontSize = 12.sp)
-                    Text("Current payable: ₹${kotlin.math.abs(v.balance).toInt()}", fontWeight = FontWeight.Bold, color = LossRed)
+                    Text(
+                        "Current payable: ${Formatters.formatInrCurrency(v.balance, fractionDigits = 0, useAbsolute = true)}",
+                        fontWeight = FontWeight.Bold,
+                        color = LossRed
+                    )
                     OutlinedTextField(
                         value = amountText,
                         onValueChange = { amountText = InputFilters.decimal(it) },
@@ -1272,8 +1252,9 @@ private fun CustomerCard(
                 }
 
                 Column(horizontalAlignment = Alignment.End) {
+                    val raw = Formatters.formatInrCurrency(customer.balance, fractionDigits = 0, useAbsolute = true)
                     Text(
-                        text = if (customer.balance == 0.0) "Settled" else "₹${kotlin.math.abs(customer.balance).toInt()}",
+                        text = if (customer.balance == 0.0) "Settled" else raw,
                         fontWeight = FontWeight.Black,
                         fontSize = 16.sp,
                         color = if (due) LossRed else TextSecondary
@@ -1367,8 +1348,9 @@ private fun VendorCard(
                     }
                 }
                 Column(horizontalAlignment = Alignment.End) {
+                    val raw = Formatters.formatInrCurrency(vendor.balance, fractionDigits = 0, useAbsolute = true)
                     Text(
-                        text = if (vendor.balance == 0.0) "Settled" else "₹${kotlin.math.abs(vendor.balance).toInt()}",
+                        text = if (vendor.balance == 0.0) "Settled" else raw,
                         fontWeight = FontWeight.Black,
                         fontSize = 16.sp,
                         color = if (payable) LossRed else TextSecondary
@@ -1452,8 +1434,9 @@ fun PartyCard(party: PartyEntity) {
             }
             
             Column(horizontalAlignment = Alignment.End) {
+                val raw = Formatters.formatInrCurrency(party.balance, fractionDigits = 0, useAbsolute = true)
                 Text(
-                    text = if(party.balance == 0.0) "Settled" else "₹${kotlin.math.abs(party.balance).toInt()}",
+                    text = if(party.balance == 0.0) "Settled" else raw,
                     fontWeight = FontWeight.Black,
                     fontSize = 18.sp,
                     color = if(isRed) LossRed else Gray400

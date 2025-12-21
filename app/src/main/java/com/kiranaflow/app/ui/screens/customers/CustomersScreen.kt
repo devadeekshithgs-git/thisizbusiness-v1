@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.material.icons.filled.People
+import com.kiranaflow.app.util.Formatters
 
 @Composable
 fun CustomersScreen(
@@ -99,7 +100,7 @@ fun CustomersScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "₹${state.totalReceivables.toInt()}",
+                        Formatters.formatInrCurrency(state.totalReceivables, fractionDigits = 0, useAbsolute = true),
                         style = MaterialTheme.typography.displayMedium.copy(
                             fontWeight = FontWeight.Black,
                             color = BgPrimary,

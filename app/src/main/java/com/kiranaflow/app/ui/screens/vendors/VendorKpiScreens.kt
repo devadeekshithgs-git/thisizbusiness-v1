@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -30,6 +31,7 @@ fun ItemsToReorderScreen(
     viewModel: VendorKpiViewModel = viewModel()
 ) {
     val items by viewModel.lowStockItems.collectAsState()
+    val vendorsById by viewModel.vendorsById.collectAsState()
     var query by remember { mutableStateOf("") }
     var reminderForItem by remember { mutableStateOf<ItemEntity?>(null) }
     var showReminderDialog by remember { mutableStateOf(false) }
@@ -66,6 +68,7 @@ fun ItemsToReorderScreen(
             items(filtered, key = { it.id }) { item ->
                 ReorderItemRow(
                     item = item,
+                    vendorName = item.vendorId?.let { vendorsById[it]?.name } ?: "No vendor",
                     onRemind = {
                         reminderForItem = item
                         showReminderDialog = true
@@ -92,9 +95,12 @@ fun ItemsToReorderScreen(
 @Composable
 private fun ReorderItemRow(
     item: ItemEntity,
+    vendorName: String,
     onRemind: () -> Unit
 ) {
-    val low = item.stock < item.reorderPoint
+    val stockVal = if (item.isLoose) item.stockKg else item.stock.toDouble()
+    val stockLabel = if (item.isLoose) "${String.format("%.2f", stockVal).trimEnd('0').trimEnd('.')} kg" else "${stockVal.toInt()} pcs"
+    val low = stockVal < item.reorderPoint.toDouble()
     Card(
         colors = CardDefaults.cardColors(containerColor = BgPrimary),
         shape = RoundedCornerShape(14.dp),
@@ -121,14 +127,15 @@ private fun ReorderItemRow(
                     Text(item.name, fontWeight = FontWeight.Bold, color = TextPrimary, maxLines = 1)
                     Spacer(modifier = Modifier.height(2.dp))
                     Text("${item.category} • ${item.rackLocation ?: "No loc"}", color = TextSecondary, fontSize = 12.sp)
+                    Text("Vendor: $vendorName", color = TextSecondary, fontSize = 12.sp)
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text("${item.stock} left", fontWeight = FontWeight.Black, color = if (low) LossRed else TextPrimary)
-                Text("Reorder @ ${item.reorderPoint}", color = TextSecondary, fontSize = 12.sp)
+                Text("$stockLabel left", fontWeight = FontWeight.Black, color = if (low) LossRed else TextPrimary)
+                Text("Reorder @ ${item.reorderPoint}${if (item.isLoose) " kg" else ""}", color = TextSecondary, fontSize = 12.sp)
                 Spacer(modifier = Modifier.height(6.dp))
                 TextButton(onClick = onRemind, contentPadding = PaddingValues(0.dp)) {
-                    Text("Remind", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("Set by-when", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }
@@ -142,9 +149,15 @@ fun TotalPayablesScreen(
     viewModel: VendorKpiViewModel = viewModel()
 ) {
     val vendors by viewModel.vendorsWithPayables.collectAsState()
+    val vendorTxById by viewModel.vendorTransactionsById.collectAsState()
+    val txItemsByTxId by viewModel.transactionItemsByTxId.collectAsState()
     var query by remember { mutableStateOf("") }
     var reminderForVendor by remember { mutableStateOf<PartyEntity?>(null) }
     var showReminderDialog by remember { mutableStateOf(false) }
+    var payVendor by remember { mutableStateOf<PartyEntity?>(null) }
+    var payAmountText by remember { mutableStateOf("") }
+    var payMode by remember { mutableStateOf("CASH") }
+    var paying by remember { mutableStateOf(false) }
 
     val filtered = remember(vendors, query) {
         val q = query.trim()
@@ -178,9 +191,19 @@ fun TotalPayablesScreen(
             items(filtered, key = { it.id }) { v ->
                 PayableVendorRow(
                     v = v,
+                    lastDueNote = run {
+                        val recent = vendorTxById[v.id].orEmpty()
+                        val lastDue = recent.firstOrNull { it.type == "EXPENSE" && it.paymentMode == "CREDIT" }
+                        lastDue?.title
+                    },
                     onRemind = {
                         reminderForVendor = v
                         showReminderDialog = true
+                    },
+                    onPay = {
+                        payVendor = v
+                        payAmountText = kotlin.math.abs(v.balance).toInt().toString()
+                        payMode = "CASH"
                     }
                 )
             }
@@ -199,12 +222,103 @@ fun TotalPayablesScreen(
             }
         )
     }
+
+    // Payment sheet: partial/full settlement directly from Total Payables screen.
+    if (payVendor != null) {
+        val v = payVendor!!
+        val duePurchases = remember(vendorTxById, v.id) {
+            vendorTxById[v.id].orEmpty()
+                .filter { it.type == "EXPENSE" && it.paymentMode == "CREDIT" }
+                .sortedByDescending { it.date }
+                .take(5)
+        }
+        AlertDialog(
+            onDismissRequest = { if (!paying) payVendor = null },
+            title = { Text("Settle Payable", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(v.name, fontWeight = FontWeight.Bold, color = TextPrimary)
+                    Text("Current payable: ₹${kotlin.math.abs(v.balance).toInt()}", color = LossRed, fontWeight = FontWeight.Black)
+                    OutlinedTextField(
+                        value = payAmountText,
+                        onValueChange = { payAmountText = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Amount to pay (₹)") },
+                        singleLine = true,
+                        enabled = !paying,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = White,
+                            unfocusedContainerColor = White,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilterChip(selected = payMode == "CASH", onClick = { payMode = "CASH" }, label = { Text("Cash") })
+                        FilterChip(selected = payMode == "UPI", onClick = { payMode = "UPI" }, label = { Text("UPI") })
+                    }
+                    Text(
+                        "Tip: enter partial amount to settle partially.",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+
+                    if (duePurchases.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("What you owe (recent)", fontWeight = FontWeight.Black, color = TextPrimary)
+                        duePurchases.forEach { tx ->
+                            val lines = txItemsByTxId[tx.id].orEmpty()
+                            Surface(color = Gray100, shape = RoundedCornerShape(12.dp)) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = "₹${kotlin.math.abs(tx.amount).toInt()} • ${tx.time}",
+                                        fontWeight = FontWeight.Bold,
+                                        color = LossRed
+                                    )
+                                    if (lines.isNotEmpty()) {
+                                        lines.take(4).forEach { li ->
+                                            Text("• ${li.itemNameSnapshot} × ${li.qty}", color = TextSecondary, fontSize = 12.sp)
+                                        }
+                                        if (lines.size > 4) {
+                                            Text("… +${lines.size - 4} more", color = TextSecondary, fontSize = 12.sp)
+                                        }
+                                    } else {
+                                        Text(tx.title, color = TextSecondary, fontSize = 12.sp, maxLines = 2)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !paying && (payAmountText.toDoubleOrNull() ?: 0.0) > 0.0,
+                    onClick = {
+                        val amt = payAmountText.toDoubleOrNull() ?: 0.0
+                        if (amt <= 0.0) return@TextButton
+                        paying = true
+                        viewModel.recordVendorPayment(v, amt, payMode)
+                        paying = false
+                        payVendor = null
+                    }
+                ) { Text(if (paying) "Saving..." else "Record Payment") }
+            },
+            dismissButton = {
+                TextButton(enabled = !paying, onClick = { payVendor = null }) { Text("Cancel") }
+            }
+        )
+    }
 }
 
 @Composable
 private fun PayableVendorRow(
     v: PartyEntity,
+    lastDueNote: String?,
     onRemind: () -> Unit
+    ,
+    onPay: () -> Unit
 ) {
     val payable = kotlin.math.abs(v.balance)
     Card(
@@ -222,12 +336,26 @@ private fun PayableVendorRow(
                 Text(v.name, fontWeight = FontWeight.Bold, color = TextPrimary, maxLines = 1)
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(v.phone, color = TextSecondary, fontSize = 12.sp)
+                if (!lastDueNote.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Last due: $lastDueNote",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 1
+                    )
+                }
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text("₹${payable.toInt()}", fontWeight = FontWeight.Black, color = LossRed)
                 Spacer(modifier = Modifier.height(6.dp))
-                TextButton(onClick = onRemind, contentPadding = PaddingValues(0.dp)) {
-                    Text("Remind", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onPay, contentPadding = PaddingValues(0.dp)) {
+                        Text("Pay", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                    TextButton(onClick = onRemind, contentPadding = PaddingValues(0.dp)) {
+                        Text("Remind", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
                 }
             }
         }

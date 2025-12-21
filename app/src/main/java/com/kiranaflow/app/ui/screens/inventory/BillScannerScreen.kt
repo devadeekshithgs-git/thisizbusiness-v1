@@ -2,6 +2,7 @@ package com.kiranaflow.app.ui.screens.inventory
 
 import android.content.Intent
 import android.net.Uri
+import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,6 +45,7 @@ import com.kiranaflow.app.ui.theme.GrayBg
 import com.kiranaflow.app.ui.theme.TextPrimary
 import com.kiranaflow.app.ui.theme.TextSecondary
 import com.kiranaflow.app.ui.theme.White
+import java.io.File
 
 @Composable
 fun BillScannerScreen(
@@ -49,6 +55,13 @@ fun BillScannerScreen(
 ) {
     val context = LocalContext.current
     val cr = context.contentResolver
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        if (ok) {
+            pendingCameraUri?.let { onBillDocumentSelected(it) }
+        }
+        pendingCameraUri = null
+    }
 
     val billPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -117,7 +130,19 @@ fun BillScannerScreen(
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Vendor Bill OCR", fontWeight = FontWeight.Bold, color = TextPrimary)
-                        Text("Supports: JPG/PNG/PDF", fontSize = 12.sp, color = TextSecondary)
+                        Text("Supports: Camera, JPG/PNG/PDF", fontSize = 12.sp, color = TextSecondary)
+                        KiranaButton(
+                            text = "Scan bill (camera)",
+                            onClick = {
+                                val dir = File(context.cacheDir, "bill_scans").apply { mkdirs() }
+                                val photoFile = File.createTempFile("bill_scan_", ".jpg", dir)
+                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+                                pendingCameraUri = uri
+                                cameraLauncher.launch(uri)
+                            },
+                            icon = Icons.Default.FileOpen,
+                            colors = ButtonDefaults.buttonColors(containerColor = Blue600, contentColor = BgPrimary)
+                        )
                         KiranaButton(
                             text = "Choose bill (image/PDF)",
                             onClick = { billPicker.launch(arrayOf("image/*", "application/pdf")) },

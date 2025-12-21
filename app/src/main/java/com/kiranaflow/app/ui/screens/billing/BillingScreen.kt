@@ -10,6 +10,7 @@ import android.speech.tts.TextToSpeech
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -107,6 +108,11 @@ fun BillingScreen(
     var quickAddPrice by remember { mutableStateOf("") }
     var quickAddStock by remember { mutableStateOf("") }
     var quickAddNameError by remember { mutableStateOf(false) }
+
+    // Loose items (sold by weight): store selected step size (grams) per item in cart.
+    val looseStepByItemId = remember { mutableStateMapOf<Int, Int>() }
+    var customWeightForItemId by remember { mutableStateOf<Int?>(null) }
+    var customWeightText by remember { mutableStateOf("") }
 
     // Expense form state (A6)
     val vendors by repo.vendors.collectAsState(initial = emptyList())
@@ -405,7 +411,9 @@ fun BillingScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
-                                        Text("₹${item.price.toInt()}", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                        val priceText =
+                                            if (item.isLoose) "₹${item.pricePerKg.toInt()}/kg" else "₹${item.price.toInt()}"
+                                        Text(priceText, fontWeight = FontWeight.Bold, color = TextPrimary)
                                     }
                                 }
                             }
@@ -442,18 +450,43 @@ fun BillingScreen(
                         contentPadding = PaddingValues(bottom = 120.dp)
                     ) {
                         items(billItems) { billItem ->
+                            val isLoose = billItem.item.isLoose
+                            if (isLoose) {
+                                LaunchedEffect(billItem.item.id) {
+                                    if (looseStepByItemId[billItem.item.id] == null) {
+                                        looseStepByItemId[billItem.item.id] = 250
+                                    }
+                                }
+                            }
+                            val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 250) else 1
+                            val subtotal =
+                                if (isLoose) billItem.item.pricePerKg * (billItem.qty / 1000.0)
+                                else billItem.item.price * billItem.qty
                             CartItemCard(
                                 itemName = billItem.item.name,
                                 rackLocation = billItem.item.rackLocation,
                                 imageUri = billItem.item.imageUri,
                                 qty = billItem.qty,
+                                isLoose = isLoose,
+                                pricePerKg = billItem.item.pricePerKg,
                                 unitPrice = billItem.item.price,
-                                subtotal = billItem.item.price * billItem.qty,
-                                onInc = { viewModel.updateItemQuantity(billItem.item.id, billItem.qty + 1) },
+                                subtotal = subtotal,
+                                selectedStepGrams = step,
+                                onSelectStepGrams = { grams ->
+                                    // Portion chips set BOTH the active +/- step and the quantity immediately.
+                                    // This ensures the subtotal updates instantly (requested behavior).
+                                    looseStepByItemId[billItem.item.id] = grams
+                                    viewModel.updateItemQuantity(billItem.item.id, grams)
+                                },
+                                onCustomWeight = {
+                                    customWeightForItemId = billItem.item.id
+                                    customWeightText = billItem.qty.toString()
+                                },
+                                onInc = { viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step) },
                                 onDec = {
-                                    if (billItem.qty > 1) {
-                                        viewModel.updateItemQuantity(billItem.item.id, billItem.qty - 1)
-                                    }
+                                    val newQty = billItem.qty - step
+                                    if (newQty > 0) viewModel.updateItemQuantity(billItem.item.id, newQty)
+                                    else viewModel.removeItemFromBill(billItem.item.id)
                                 },
                                 onDelete = { viewModel.removeItemFromBill(billItem.item.id) },
                                 onEditPrice = {
@@ -593,6 +626,25 @@ fun BillingScreen(
                             expanded = showVendorDropdown,
                             onDismissRequest = { showVendorDropdown = false }
                         ) {
+                            // Search header (must be focusable; avoid disabled DropdownMenuItem wrapping)
+                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                OutlinedTextField(
+                                    value = vendorQuery,
+                                    onValueChange = { vendorQuery = it },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                    placeholder = { Text("Search vendor...") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = White,
+                                        unfocusedContainerColor = White,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
+                                    )
+                                )
+                            }
+                            Divider(color = Gray200)
+
                             DropdownMenuItem(
                                 text = { Text("No Vendor", color = TextPrimary) },
                                 onClick = {
@@ -609,26 +661,6 @@ fun BillingScreen(
                                     }
                                 },
                                 onClick = { showAddVendorDialog = true }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    OutlinedTextField(
-                                        value = vendorQuery,
-                                        onValueChange = { vendorQuery = it },
-                                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                                        placeholder = { Text("Search vendor...") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedContainerColor = White,
-                                            unfocusedContainerColor = White,
-                                            focusedTextColor = TextPrimary,
-                                            unfocusedTextColor = TextPrimary
-                                        )
-                                    )
-                                },
-                                onClick = {},
-                                enabled = false
                             )
                             vendors
                                 .filter { vendorQuery.isBlank() || it.name.contains(vendorQuery, true) || it.phone.contains(vendorQuery) }
@@ -667,26 +699,24 @@ fun BillingScreen(
                             expanded = showCategoryDropdown,
                             onDismissRequest = { showCategoryDropdown = false }
                         ) {
-                            DropdownMenuItem(
-                                text = {
-                                    OutlinedTextField(
-                                        value = categoryQuery,
-                                        onValueChange = { categoryQuery = it },
-                                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                                        placeholder = { Text("Search category...") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedContainerColor = White,
-                                            unfocusedContainerColor = White,
-                                            focusedTextColor = TextPrimary,
-                                            unfocusedTextColor = TextPrimary
-                                        )
+                            // Search header (focusable)
+                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                OutlinedTextField(
+                                    value = categoryQuery,
+                                    onValueChange = { categoryQuery = it },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                    placeholder = { Text("Search category...") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = White,
+                                        unfocusedContainerColor = White,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
                                     )
-                                },
-                                onClick = {},
-                                enabled = false
-                            )
+                                )
+                            }
+                            Divider(color = Gray200)
                             DropdownMenuItem(
                                 text = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -782,7 +812,14 @@ fun BillingScreen(
                         onDismissRequest = { showAddVendorDialog = false },
                         title = { Text("Add Vendor", fontWeight = FontWeight.Bold) },
                         text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .imePadding()
+                                    .heightIn(max = 520.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
                                 OutlinedTextField(value = newVendorName, onValueChange = { newVendorName = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
                                 OutlinedTextField(
                                     value = newVendorPhone,
@@ -1084,6 +1121,38 @@ fun BillingScreen(
             }
         }
     }
+
+    if (customWeightForItemId != null) {
+        AlertDialog(
+            onDismissRequest = { customWeightForItemId = null },
+            title = { Text("Custom weight (grams)", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    KiranaInput(
+                        value = customWeightText,
+                        onValueChange = { customWeightText = InputFilters.digitsOnly(it) },
+                        placeholder = "e.g. 750",
+                        label = "WEIGHT (g)",
+                        keyboardType = KeyboardType.Number
+                    )
+                    Text("Tip: 1 kg = 1000 g", color = TextSecondary, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val id = customWeightForItemId ?: return@TextButton
+                    val grams = customWeightText.toIntOrNull() ?: 0
+                    if (grams > 0) {
+                        // Custom weight also becomes the active step going forward.
+                        looseStepByItemId[id] = grams
+                        viewModel.updateItemQuantity(id, grams)
+                    }
+                    customWeightForItemId = null
+                }) { Text("Apply") }
+            },
+            dismissButton = { TextButton(onClick = { customWeightForItemId = null }) { Text("Cancel") } }
+        )
+    }
 }
 
 private sealed interface BillingScanOverlayState {
@@ -1284,19 +1353,40 @@ private fun FrameStatusOverlay(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun CartItemCard(
     itemName: String,
     rackLocation: String?,
     imageUri: String?,
     qty: Int,
+    isLoose: Boolean,
+    pricePerKg: Double,
     unitPrice: Double,
     subtotal: Double,
+    selectedStepGrams: Int,
+    onSelectStepGrams: (Int) -> Unit,
+    onCustomWeight: () -> Unit,
     onInc: () -> Unit,
     onDec: () -> Unit,
     onDelete: () -> Unit,
     onEditPrice: () -> Unit
 ) {
+    fun formatWeightShort(grams: Int): String {
+        if (grams <= 0) return "0g"
+        return if (grams >= 1000) {
+            val kg = grams / 1000.0
+            // Keep it short: 1kg, 1.25kg, etc.
+            val txt = if (kg % 1.0 == 0.0) kg.toInt().toString() else String.format("%.2f", kg).trimEnd('0').trimEnd('.')
+            "${txt}kg"
+        } else {
+            "${grams}g"
+        }
+    }
+
     KiranaCard(borderColor = Color.Transparent) {
+        // Two-row layout for responsiveness:
+        // Row 1: main content + qty/subtotal
+        // Row 2 (loose only): portion chips on a full-width line to avoid overlap on small screens.
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -1312,6 +1402,8 @@ fun CartItemCard(
                 }
             }
             Spacer(modifier = Modifier.width(8.dp))
+
+            // Thumbnail
             Box(
                 modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(BgCard),
                 contentAlignment = Alignment.Center
@@ -1327,12 +1419,15 @@ fun CartItemCard(
                 }
             }
             Spacer(modifier = Modifier.width(12.dp))
+
+            // Name + unit/loc
             Column(modifier = Modifier.weight(1f)) {
-                Text(itemName, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TextPrimary)
+                Text(itemName, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TextPrimary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    val unitLabel = if (isLoose) "₹${pricePerKg.toInt()}/kg" else "₹${unitPrice.toInt()}"
                     Text(
-                        "₹${unitPrice.toInt()}",
+                        unitLabel,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         color = TextPrimary,
@@ -1350,14 +1445,19 @@ fun CartItemCard(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = TextPrimary
+                                color = TextPrimary,
+                                maxLines = 1
                             )
                         }
                     }
                 }
             }
+
+            // Qty + subtotal (right)
             Column(
-                modifier = Modifier.widthIn(min = 112.dp),
+                modifier = Modifier
+                    .padding(start = 10.dp)
+                    .widthIn(min = 96.dp),
                 horizontalAlignment = Alignment.End
             ) {
                 Surface(
@@ -1372,10 +1472,10 @@ fun CartItemCard(
                             Icon(Icons.Default.Remove, null, tint = TextPrimary, modifier = Modifier.size(18.dp))
                         }
                         Text(
-                            qty.toString(),
+                            if (isLoose) formatWeightShort(qty) else qty.toString(),
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
-                            modifier = Modifier.width(24.dp),
+                            modifier = Modifier.width(if (isLoose) 56.dp else 28.dp),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                         IconButton(onClick = onInc, modifier = Modifier.size(28.dp)) {
@@ -1383,12 +1483,38 @@ fun CartItemCard(
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     "₹${subtotal.toInt()}",
                     fontWeight = FontWeight.Black,
                     fontSize = 14.sp,
-                    color = TextPrimary
+                    color = TextPrimary,
+                    maxLines = 1
+                )
+            }
+        }
+
+        if (isLoose) {
+            Spacer(modifier = Modifier.height(12.dp))
+            val leftGutter = 40.dp + 8.dp + 48.dp + 12.dp
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = leftGutter)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val options = listOf(250, 500, 1000, 2000)
+                options.forEach { g ->
+                    FilterChip(
+                        selected = selectedStepGrams == g,
+                        onClick = { onSelectStepGrams(g) },
+                        label = { Text(formatWeightShort(g), fontWeight = FontWeight.Bold) }
+                    )
+                }
+                AssistChip(
+                    onClick = onCustomWeight,
+                    label = { Text("Custom", fontWeight = FontWeight.Bold) }
                 )
             }
         }

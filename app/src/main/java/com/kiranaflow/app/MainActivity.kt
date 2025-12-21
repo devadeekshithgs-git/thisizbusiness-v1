@@ -60,6 +60,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -120,6 +123,19 @@ class MainActivity : ComponentActivity() {
             val context = this
             val appPrefsStore = remember { AppPrefsStore(context) }
             val appPrefs by appPrefsStore.prefs.collectAsState(initial = com.kiranaflow.app.data.local.AppPrefs())
+
+            // Privacy overlay: re-lock (mask numbers) when app goes to background.
+            val lifecycleOwner = LocalLifecycleOwner.current
+            val scope = rememberCoroutineScope()
+            DisposableEffect(lifecycleOwner) {
+                val obs = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_STOP) {
+                        scope.launch { appPrefsStore.setPrivacyUnlockedUntil(0L) }
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(obs)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+            }
             
             KiranaTheme(darkTheme = appPrefs.darkModeEnabled) { 
                 KiranaApp()
@@ -339,7 +355,9 @@ fun KiranaApp() {
                         type = "VENDOR",
                         triggerAdd = quickAction == "vendors",
                         onTriggerConsumed = { quickAction = null },
-                        onOpenSettings = { showSettingsDrawer = true }
+                        onOpenSettings = { showSettingsDrawer = true },
+                        onOpenReorder = { navController.navigate("vendors/reorder") },
+                        onOpenPayables = { navController.navigate("vendors/payables") }
                     )
                 }
                 composable("vendors/reorder") {

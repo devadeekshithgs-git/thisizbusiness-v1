@@ -13,6 +13,12 @@ data class ItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val name: String,
     val price: Double, // Renamed from sellingPrice
+    // Loose items (sold by weight): qty is interpreted in GRAMS in billing/transactions.
+    val isLoose: Boolean = false,
+    val pricePerKg: Double = 0.0,
+    // For loose items only: stock is stored in KG (can be fractional).
+    // For non-loose items, this field is currently unused (kept for forward-compat).
+    val stockKg: Double = 0.0,
     val stock: Int,
     val category: String,
     val rackLocation: String?, // Renamed from location
@@ -77,6 +83,7 @@ data class TransactionItemEntity(
     val itemId: Int?,
     val itemNameSnapshot: String, // Snapshot in case item is deleted/changed
     val qty: Int,
+    val unit: String = "PCS", // PCS | GRAM
     val price: Double // Selling price at time of sale
 )
 

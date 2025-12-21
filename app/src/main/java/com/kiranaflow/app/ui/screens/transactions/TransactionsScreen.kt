@@ -415,14 +415,15 @@ private fun TransactionExplorerCard(
     onLongPress: () -> Unit
 ) {
     val tx = row.tx
+    val isDueSale = tx.type == "SALE" && tx.paymentMode == "CREDIT"
     val typeColor = when (tx.type) {
-        "SALE" -> ProfitGreen
+        "SALE" -> if (isDueSale) LossRed else ProfitGreen
         "EXPENSE" -> LossRed
         "INCOME" -> Blue600
         else -> TextSecondary
     }
     val typeBg = when (tx.type) {
-        "SALE" -> ProfitGreenBg
+        "SALE" -> if (isDueSale) LossRedBg else ProfitGreenBg
         "EXPENSE" -> LossRedBg
         "INCOME" -> Blue50
         else -> Gray100
@@ -444,7 +445,7 @@ private fun TransactionExplorerCard(
         else -> TextSecondary
     }
     val sign = if (tx.type == "EXPENSE") "-" else "+"
-    val amountColor = if (tx.type == "EXPENSE") LossRed else ProfitGreen
+    val amountColor = if (tx.type == "EXPENSE" || isDueSale) LossRed else ProfitGreen
 
     Card(
         colors = CardDefaults.cardColors(containerColor = BgPrimary),

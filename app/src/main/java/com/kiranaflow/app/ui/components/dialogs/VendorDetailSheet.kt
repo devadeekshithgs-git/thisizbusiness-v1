@@ -25,6 +25,10 @@ import com.kiranaflow.app.ui.components.TransactionCard
 import com.kiranaflow.app.ui.theme.*
 import com.kiranaflow.app.util.InputFilters
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,6 +40,9 @@ fun VendorDetailSheet(
 ) {
     var amountText by remember { mutableStateOf("") }
     var selectedPaymentMethod by remember { mutableStateOf("CASH") }
+    var saving by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -159,14 +166,24 @@ fun VendorDetailSheet(
 
             // Save Transaction Button
             KiranaButton(
-                text = "Save Transaction",
+                text = if (saving) "Saved" else "Save Transaction",
                 onClick = {
+                    if (saving) return@KiranaButton
                     val amount = amountText.toDoubleOrNull() ?: 0.0
                     if (amount > 0) {
+                        saving = true
                         onSavePayment(amount, selectedPaymentMethod)
                         amountText = ""
+                        runCatching {
+                            Toast.makeText(context, "Payment recorded", Toast.LENGTH_SHORT).show()
+                        }
+                        scope.launch {
+                            delay(800)
+                            saving = false
+                        }
                     }
                 },
+                enabled = !saving,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Blue600,
                     contentColor = BgPrimary

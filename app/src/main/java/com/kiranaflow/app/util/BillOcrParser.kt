@@ -17,6 +17,8 @@ object BillOcrParser {
     data class ParsedBillItem(
         val name: String,
         val qty: Int,
+        val qtyRaw: Double? = null,
+        val unit: String? = null, // e.g. PCS | KG | G
         val unitPrice: Double? = null,
         val total: Double? = null,
         val rawLine: String
@@ -31,6 +33,10 @@ object BillOcrParser {
         pattern = "(?i)^(total|grand\\s*total|sub\\s*total|gst|cgst|sgst|igst|invoice|bill\\s*no|date|amount|net|round\\s*off|cash|upi|balance|thank)",
     )
 
+    private val headerLineRegex = Regex(
+        pattern = "(?i)\\b(item|particulars?|description|product)\\b.*\\b(qty|quantity)\\b.*\\b(rate|price|mrp)\\b"
+    )
+
     private val gstRegex = Regex("(?i)\\b\\d{2}[A-Z]{5}\\d{4}[A-Z]{1}[A-Z\\d]{1}Z[A-Z\\d]{1}\\b")
     private val phoneRegex = Regex("(?<!\\d)(\\d{10})(?!\\d)")
 
@@ -38,7 +44,7 @@ object BillOcrParser {
     // "Sugar 10 45.00 450.00"
     // "Sugar 10 45 450"
     private val spacedColumnsRegex =
-        Regex("""^(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$""")
+        Regex("""^(.+?)\s+(\d+(?:\.\d+)?)\s+([₹\d][\d,]*(?:\.\d+)?)\s+([₹\d][\d,]*(?:\.\d+)?)$""")
 
     // Examples:
     // "Sugar x2 @45"
@@ -49,7 +55,12 @@ object BillOcrParser {
     // Examples:
     // "Sugar 2 pcs 45"
     private val qtyUnitRateRegex =
-        Regex("""^(.+?)\s+(\d+(?:\.\d+)?)\s*(?:pcs?|nos?|units?)\s+(\d+(?:\.\d+)?)\s*$""", RegexOption.IGNORE_CASE)
+        Regex("""^(.+?)\s+(\d+(?:\.\d+)?)\s*(?:pcs?|nos?|units?|kg|kgs|g|gm|gms|grams?)\s+(\d+(?:\.\d+)?)\s*$""", RegexOption.IGNORE_CASE)
+
+    // Examples:
+    // "Sugar 45 90"  -> name rate amount (qty=1)
+    private val rateAmountRegex =
+        Regex("""^(.+?)\s+([₹\d][\d,]*(?:\.\d+)?)\s+([₹\d][\d,]*(?:\.\d+)?)$""")
 
     fun parse(ocrText: String): ParsedBill {
         val lines = ocrText
@@ -74,28 +85,32 @@ object BillOcrParser {
 
     private fun parseItems(lines: List<String>): List<ParsedBillItem> {
         val items = mutableListOf<ParsedBillItem>()
-        for (raw in lines) {
+        val startIdx = lines.indexOfFirst { headerLineRegex.containsMatchIn(it) }.let { if (it >= 0) it + 1 else 0 }
+        for (raw in lines.drop(startIdx)) {
             val line = raw
                 .replace(Regex("\\s+"), " ")
                 .trim()
             if (line.isBlank()) continue
             if (skipLineRegex.containsMatchIn(line)) continue
             if (line.length < 3) continue
+            if (headerLineRegex.containsMatchIn(line)) continue
 
             // Try common "columns" pattern: name qty unit total.
             val m1 = spacedColumnsRegex.find(line)
             if (m1 != null) {
                 val name = m1.groupValues[1].trim().trim('-').trim()
-                val qty = m1.groupValues[2].toDoubleOrNull()
-                val unit = m1.groupValues[3].toDoubleOrNull()
-                val total = m1.groupValues[4].toDoubleOrNull()
-                val qInt = qty?.toIntOrNullSafe()
+                val qtyRaw = m1.groupValues[2].toDoubleOrNull()
+                val unitPrice = parseNumber(m1.groupValues[3])
+                val total = parseNumber(m1.groupValues[4])
+                val qInt = qtyRaw?.toIntOrNullSafe()
                 if (!name.isNullOrBlank() && qInt != null && qInt > 0) {
                     items.add(
                         ParsedBillItem(
                             name = name,
                             qty = qInt,
-                            unitPrice = unit,
+                            qtyRaw = qtyRaw,
+                            unit = "PCS",
+                            unitPrice = unitPrice,
                             total = total,
                             rawLine = raw
                         )
@@ -108,16 +123,18 @@ object BillOcrParser {
             val m2 = qtyRateRegex.find(line)
             if (m2 != null) {
                 val name = m2.groupValues[1].trim().trim('-').trim()
-                val qty = m2.groupValues[2].toDoubleOrNull()
-                val unit = m2.groupValues[3].toDoubleOrNull()
-                val qInt = qty?.toIntOrNullSafe()
+                val qtyRaw = m2.groupValues[2].toDoubleOrNull()
+                val unitPrice = m2.groupValues[3].toDoubleOrNull()
+                val qInt = qtyRaw?.toIntOrNullSafe()
                 if (!name.isNullOrBlank() && qInt != null && qInt > 0) {
-                    val total = if (unit != null) unit * qInt else null
+                    val total = if (unitPrice != null) unitPrice * qInt else null
                     items.add(
                         ParsedBillItem(
                             name = name,
                             qty = qInt,
-                            unitPrice = unit,
+                            qtyRaw = qtyRaw,
+                            unit = "PCS",
+                            unitPrice = unitPrice,
                             total = total,
                             rawLine = raw
                         )
@@ -130,16 +147,47 @@ object BillOcrParser {
             val m3 = qtyUnitRateRegex.find(line)
             if (m3 != null) {
                 val name = m3.groupValues[1].trim().trim('-').trim()
-                val qty = m3.groupValues[2].toDoubleOrNull()
-                val unit = m3.groupValues[3].toDoubleOrNull()
-                val qInt = qty?.toIntOrNullSafe()
+                val qtyRaw = m3.groupValues[2].toDoubleOrNull()
+                val unitToken = line.lowercase().split(" ").firstOrNull { it in setOf("kg", "kgs", "g", "gm", "gms", "grams", "pcs", "pc", "nos", "units") }
+                val unit = when {
+                    unitToken == null -> "PCS"
+                    unitToken.startsWith("kg") -> "KG"
+                    unitToken.startsWith("g") -> "G"
+                    else -> "PCS"
+                }
+                val unitPrice = m3.groupValues[3].toDoubleOrNull()
+                val qInt = qtyRaw?.toIntOrNullSafe()
                 if (!name.isNullOrBlank() && qInt != null && qInt > 0) {
-                    val total = if (unit != null) unit * qInt else null
+                    val total = if (unitPrice != null) unitPrice * qInt else null
                     items.add(
                         ParsedBillItem(
                             name = name,
                             qty = qInt,
-                            unitPrice = unit,
+                            qtyRaw = qtyRaw,
+                            unit = unit,
+                            unitPrice = unitPrice,
+                            total = total,
+                            rawLine = raw
+                        )
+                    )
+                    continue
+                }
+            }
+
+            // Try "name rate amount" (qty defaults to 1)
+            val m4 = rateAmountRegex.find(line)
+            if (m4 != null) {
+                val name = m4.groupValues[1].trim().trim('-').trim()
+                val unitPrice = parseNumber(m4.groupValues[2])
+                val total = parseNumber(m4.groupValues[3])
+                if (!name.isNullOrBlank() && unitPrice != null && total != null) {
+                    items.add(
+                        ParsedBillItem(
+                            name = name,
+                            qty = 1,
+                            qtyRaw = 1.0,
+                            unit = "PCS",
+                            unitPrice = unitPrice,
                             total = total,
                             rawLine = raw
                         )
@@ -159,6 +207,15 @@ object BillOcrParser {
         val rounded = kotlin.math.round(this).toInt()
         return rounded
     }
+
+    private fun parseNumber(token: String): Double? {
+        val cleaned = token
+            .replace("₹", "")
+            .replace(",", "")
+            .trim()
+        return cleaned.toDoubleOrNull()
+    }
 }
+
 
 
