@@ -6,8 +6,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -36,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -319,7 +324,7 @@ fun InventoryScreen(
                     importBusy = true
                     try {
                         val text = OcrUtils.ocrFromUri(cr, uri)
-                        val parsed = BillExtractionPipeline.extract(text)
+                        val parsed = BillExtractionPipeline.extract(context, text)
                         val res = repo.processVendorBill(parsed)
                         Toast.makeText(
                             context,
@@ -384,12 +389,12 @@ fun InventoryScreen(
             draft = draft,
             vendors = vendors,
             onDismiss = { purchaseDraft = null },
-            onConfirm = { vendor, mode ->
+            onConfirm = { vendor, mode, editedBill ->
                 scope.launch {
                     runCatching {
                         repo.recordVendorBillPurchaseWithItems(
                             vendor = vendor,
-                            parsed = draft.parsed,
+                            parsed = editedBill,
                             mode = mode,
                             receiptImageUri = draft.receiptUri
                         )
@@ -417,19 +422,67 @@ private fun RecordVendorBillPurchaseDialog(
     draft: PurchaseDraft,
     vendors: List<PartyEntity>,
     onDismiss: () -> Unit,
-    onConfirm: (PartyEntity, String) -> Unit
+    onConfirm: (PartyEntity, String, BillOcrParser.ParsedBill) -> Unit
 ) {
     var mode by remember { mutableStateOf("CREDIT") } // default: Udhaar
     var selectedVendorId by remember(draft.detectedVendorId) { mutableStateOf(draft.detectedVendorId) }
 
     val selectedVendor = remember(vendors, selectedVendorId) { vendors.firstOrNull { it.id == selectedVendorId } }
-    val computedTotal = remember(draft.parsed) {
-        draft.parsed.items.sumOf { it.total ?: ((it.unitPrice ?: 0.0) * it.qty) }
+
+    data class EditableLine(
+        val id: Int,
+        val name: String,
+        val qty: String,
+        val unitPrice: String,
+        val unit: String,
+        val rawLine: String
+    )
+
+    val initialLines = remember(draft.parsed) {
+        draft.parsed.items.take(80).mapIndexed { idx, it ->
+            val inferredUnitPrice = it.unitPrice ?: run {
+                val t = it.total
+                if (t != null && it.qty > 0) t / it.qty.toDouble() else null
+            }
+            EditableLine(
+                id = idx,
+                name = it.name,
+                qty = it.qty.toString(),
+                unitPrice = inferredUnitPrice?.takeIf { p -> p > 0.0 }?.toString().orEmpty(),
+                unit = it.unit ?: "PCS",
+                rawLine = it.rawLine
+            )
+        }
+    }
+
+    var lines by remember(draft.parsed) { mutableStateOf(initialLines) }
+
+    val editedParsed = remember(draft.parsed.vendor, lines) {
+        val editedItems = lines.mapNotNull { l ->
+            val name = l.name.trim()
+            if (name.isBlank()) return@mapNotNull null
+            val qty = l.qty.trim().toIntOrNull()?.coerceAtLeast(1) ?: return@mapNotNull null
+            val unitPrice = l.unitPrice.trim().toDoubleOrNull()?.takeIf { it > 0.0 } ?: return@mapNotNull null
+            BillOcrParser.ParsedBillItem(
+                name = name,
+                qty = qty,
+                qtyRaw = qty.toDouble(),
+                unit = l.unit.trim().ifBlank { "PCS" },
+                unitPrice = unitPrice,
+                total = unitPrice * qty,
+                rawLine = l.rawLine
+            )
+        }
+        BillOcrParser.ParsedBill(vendor = draft.parsed.vendor, items = editedItems)
+    }
+
+    val computedTotal = remember(editedParsed) {
+        editedParsed.items.sumOf { it.total ?: ((it.unitPrice ?: 0.0) * it.qty) }
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Record vendor purchase?", fontWeight = FontWeight.Bold) },
+        title = { Text("Review before recording", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -473,6 +526,90 @@ private fun RecordVendorBillPurchaseDialog(
                     color = LossRed
                 )
 
+                Text(
+                    text = "Edit items before saving (wrong qty/price/name):",
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = GrayBg,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        itemsIndexed(lines, key = { _, it -> it.id }) { idx, line ->
+                            Surface(shape = RoundedCornerShape(12.dp), color = White) {
+                                Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedTextField(
+                                            value = line.name,
+                                            onValueChange = { v ->
+                                                lines = lines.toMutableList().also { it[idx] = it[idx].copy(name = v) }
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            label = { Text("Item") },
+                                            singleLine = true,
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedContainerColor = White,
+                                                unfocusedContainerColor = White
+                                            )
+                                        )
+                                        IconButton(onClick = { lines = lines.toMutableList().also { it.removeAt(idx) } }) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Remove", tint = LossRed)
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        OutlinedTextField(
+                                            value = line.qty,
+                                            onValueChange = { v ->
+                                                val filtered = v.filter { it.isDigit() }.take(4)
+                                                lines = lines.toMutableList().also { it[idx] = it[idx].copy(qty = filtered) }
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            label = { Text("Qty") },
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedContainerColor = White,
+                                                unfocusedContainerColor = White
+                                            )
+                                        )
+                                        OutlinedTextField(
+                                            value = line.unitPrice,
+                                            onValueChange = { v ->
+                                                val filtered = v.filter { it.isDigit() || it == '.' }.take(10)
+                                                lines = lines.toMutableList().also { it[idx] = it[idx].copy(unitPrice = filtered) }
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            label = { Text("Unit price") },
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedContainerColor = White,
+                                                unfocusedContainerColor = White
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     FilterChip(selected = mode == "CREDIT", onClick = { mode = "CREDIT" }, label = { Text("Udhaar") })
                     FilterChip(selected = mode == "CASH", onClick = { mode = "CASH" }, label = { Text("Cash") })
@@ -488,8 +625,8 @@ private fun RecordVendorBillPurchaseDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = selectedVendor != null && computedTotal > 0.0,
-                onClick = { selectedVendor?.let { onConfirm(it, mode) } }
+                enabled = selectedVendor != null && computedTotal > 0.0 && editedParsed.items.isNotEmpty(),
+                onClick = { selectedVendor?.let { onConfirm(it, mode, editedParsed) } }
             ) { Text("Record") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Skip") } }
@@ -514,7 +651,9 @@ private fun InventoryItemCardSelectable(
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onClick() },
-                modifier = Modifier.padding(end = 10.dp)
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .size(24.dp)
             )
         }
         InventoryItemCard(
@@ -526,63 +665,99 @@ private fun InventoryItemCardSelectable(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun InventoryItemCard(
     item: ItemEntity,
     modifier: Modifier = Modifier
 ) {
     KiranaCard(modifier = modifier, onClick = null) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top
+        ) {
+            // Product image thumbnail
+            Surface(
+                modifier = Modifier.size(56.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = Gray50
             ) {
-                Row(modifier = Modifier.weight(1f)) {
-                    Surface(
-                        modifier = Modifier.size(56.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        color = Gray50
+                if (!item.imageUri.isNullOrBlank()) {
+                    AsyncImage(
+                        model = item.imageUri,
+                        contentDescription = item.name,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        if (!item.imageUri.isNullOrBlank()) {
-                            AsyncImage(
-                                model = item.imageUri,
-                                contentDescription = item.name,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Inventory2, contentDescription = null, tint = Gray400)
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(item.name, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TextPrimary)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "${item.category} • ${item.rackLocation ?: "No Loc"}",
-                            color = TextSecondary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            val lowStock = item.stock < item.reorderPoint
-                            Badge(
-                                text = "${item.stock} in Stock",
-                                color = if (lowStock) LossRed else KiranaGreen,
-                                bg = if (lowStock) LossRedBg else KiranaGreenBg
-                            )
-                            Badge(
-                                text = "${item.marginPercentage.toInt()}% Margin",
-                                color = TextSecondary,
-                                bg = Gray100
-                            )
-                        }
+                        Icon(Icons.Default.Inventory2, contentDescription = null, tint = Gray400)
                     }
                 }
-                Text("₹${item.price.toInt()}", fontWeight = FontWeight.Black, fontSize = 18.sp, color = TextPrimary)
+            }
+            
+            Spacer(modifier = Modifier.width(12.dp))
+            
+            // Main content - takes remaining space
+            Column(modifier = Modifier.weight(1f)) {
+                // Name and Price row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        text = item.name,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = TextPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "₹${item.price.toInt()}",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp,
+                        color = TextPrimary
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(4.dp))
+                
+                // Category and location
+                Text(
+                    text = "${item.category} • ${item.rackLocation ?: "No Loc"}",
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                
+                Spacer(modifier = Modifier.height(10.dp))
+                
+                // Badges row - wrap to next line if needed
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val lowStock = item.stock < item.reorderPoint
+                    Badge(
+                        text = "${item.stock} in Stock",
+                        color = if (lowStock) LossRed else KiranaGreen,
+                        bg = if (lowStock) LossRedBg else KiranaGreenBg
+                    )
+                    Badge(
+                        text = "${item.marginPercentage.toInt()}% Margin",
+                        color = TextSecondary,
+                        bg = Gray100
+                    )
+                }
             }
         }
     }
@@ -597,7 +772,10 @@ fun Badge(text: String, color: Color, bg: Color) {
         Text(
             text = text,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = color)
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = color),
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

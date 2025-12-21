@@ -55,7 +55,8 @@ fun HomeScreen(
     viewModel: DashboardViewModel = viewModel(),
     onSettingsClick: () -> Unit = {},
     onViewAllTransactions: () -> Unit = {},
-    onOpenTransaction: (Int) -> Unit = {}
+    onOpenTransaction: (Int) -> Unit = {},
+    onOpenGstReports: () -> Unit = {}
 ) {
     // #region agent log
     com.kiranaflow.app.util.DebugLogger.log("HomeScreen.kt:47", "HomeScreen composable entered", mapOf(), "H6")
@@ -74,8 +75,8 @@ fun HomeScreen(
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
     val appPrefsStore = remember(context) { AppPrefsStore(context) }
     val appPrefs by appPrefsStore.prefs.collectAsState(initial = AppPrefs())
-    val unlocked = remember(appPrefs.privacyUnlockedUntilMillis) { appPrefs.privacyUnlockedUntilMillis > System.currentTimeMillis() }
-    val unlockDurationMs = 2 * 60 * 1000L
+    // Track whether numbers are revealed (tap to toggle)
+    var numbersRevealed by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
     data class ExpandedPnl(val label: String, val amount: Double, val valueColor: Color)
@@ -94,11 +95,9 @@ fun HomeScreen(
             modifier = modifier
                 .height(86.dp)
                 .clickable {
-                    if (!unlocked) {
-                        scope.launch {
-                            val ok = BiometricAuth.authenticate(context, title = "Unlock amounts", subtitle = "Verify to view amounts")
-                            if (ok) appPrefsStore.setPrivacyUnlockedUntil(System.currentTimeMillis() + unlockDurationMs)
-                        }
+                    // Simple tap to toggle reveal, or open expanded view if already revealed
+                    if (!numbersRevealed) {
+                        numbersRevealed = true
                     } else {
                         expandedPnl = ExpandedPnl(label = label, amount = amount, valueColor = valueColor)
                     }
@@ -125,7 +124,7 @@ fun HomeScreen(
                     Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(4.dp))
                     val raw = Formatters.formatInrCurrency(amount, fractionDigits = 0, useAbsolute = true)
-                    val display = if (unlocked) raw else Formatters.maskDigits(raw)
+                    val display = if (numbersRevealed) raw else Formatters.maskDigits(raw)
                     Text(
                         text = display,
                         color = valueColor,
@@ -307,6 +306,43 @@ fun HomeScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
         )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            colors = CardDefaults.cardColors(containerColor = BgPrimary),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            onClick = onOpenGstReports
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = Blue600)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text("GST Reports", fontWeight = FontWeight.Black, color = TextPrimary)
+                        Text(
+                            "Export GSTR-1 (JSON + Excel)",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Text(
+                    "Open",
+                    fontWeight = FontWeight.Bold,
+                    color = Blue600
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.height(24.dp))
 

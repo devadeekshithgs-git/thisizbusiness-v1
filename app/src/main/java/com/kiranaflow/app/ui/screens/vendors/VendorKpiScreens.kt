@@ -1,5 +1,6 @@
 package com.kiranaflow.app.ui.screens.vendors
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -378,64 +379,258 @@ private fun QuickReminderDialog(
         mutableStateOf(now + TimeUnit.DAYS.toMillis(1))
     }
 
-    AlertDialog(
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true
+    )
+
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text(title, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = reminderTitle,
-                    onValueChange = { reminderTitle = it },
-                    label = { Text("Title") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = White,
-                        unfocusedContainerColor = White,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
-                )
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("Note (optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = White,
-                        unfocusedContainerColor = White,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
-                )
-                Text(
-                    "Due: ${java.text.SimpleDateFormat("dd MMM, hh:mm a", java.util.Locale.getDefault()).format(java.util.Date(dueAt))}",
-                    color = TextSecondary,
-                    fontWeight = FontWeight.Medium
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(
-                        onClick = { dueAt = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2) },
-                        shape = RoundedCornerShape(12.dp)
-                    ) { Text("In 2h") }
-                    OutlinedButton(
-                        onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(1) },
-                        shape = RoundedCornerShape(12.dp)
-                    ) { Text("Tomorrow") }
-                    OutlinedButton(
-                        onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(7) },
-                        shape = RoundedCornerShape(12.dp)
-                    ) { Text("1 week") }
-                }
+        sheetState = sheetState,
+        containerColor = BgPrimary,
+        dragHandle = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(
+                    modifier = Modifier.size(width = 40.dp, height = 4.dp),
+                    shape = RoundedCornerShape(2.dp),
+                    color = Gray100
+                ) {}
+                Spacer(modifier = Modifier.height(12.dp))
             }
         },
-        confirmButton = {
-            TextButton(
-                onClick = { onSave(reminderTitle, note.trim().ifBlank { null }, dueAt) },
-                enabled = reminderTitle.trim().isNotBlank()
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                // Title
+                Text(
+                    text = title,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 24.sp,
+                    color = TextPrimary
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Reminder Title Input
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Reminder Title",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = TextSecondary
+                    )
+                    OutlinedTextField(
+                        value = reminderTitle,
+                        onValueChange = { reminderTitle = it },
+                        placeholder = { Text("Enter reminder title") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = White,
+                            unfocusedContainerColor = White,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = AlertOrange,
+                            unfocusedBorderColor = Gray100
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                    )
+                }
+
+                // Note Input
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Note (optional)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = TextSecondary
+                    )
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it },
+                        placeholder = { Text("Add a note...") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 100.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = White,
+                            unfocusedContainerColor = White,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = AlertOrange,
+                            unfocusedBorderColor = Gray100
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
+                        minLines = 3
+                    )
+                }
+
+                // Due Date Display
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Set Due Date",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = TextSecondary
+                    )
+                    
+                    Surface(
+                        color = AlertOrange.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = java.text.SimpleDateFormat("EEEE, dd MMM yyyy • hh:mm a", java.util.Locale.getDefault()).format(java.util.Date(dueAt)),
+                                color = AlertOrange,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                        }
+                    }
+
+                    // Quick Date Selection Buttons - Responsive Row with FlowRow-like behavior
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            QuickDateButton(
+                                text = "In 2 hours",
+                                isSelected = false,
+                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2) },
+                                modifier = Modifier.weight(1f)
+                            )
+                            QuickDateButton(
+                                text = "Tomorrow",
+                                isSelected = false,
+                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(1) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            QuickDateButton(
+                                text = "In 3 days",
+                                isSelected = false,
+                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(3) },
+                                modifier = Modifier.weight(1f)
+                            )
+                            QuickDateButton(
+                                text = "In 1 week",
+                                isSelected = false,
+                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(7) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Bottom Action Buttons
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = { onSave(reminderTitle, note.trim().ifBlank { null }, dueAt) },
+                    enabled = reminderTitle.trim().isNotBlank(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AlertOrange,
+                        contentColor = White,
+                        disabledContainerColor = Gray100,
+                        disabledContentColor = TextSecondary
+                    )
+                ) {
+                    Text(
+                        text = "Save Reminder",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+                
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    border = ButtonDefaults.outlinedButtonBorder.copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(Gray100)
+                    )
+                ) {
+                    Text(
+                        text = "Cancel",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = TextSecondary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickDateButton(
+    text: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier.height(52.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = if (isSelected) AlertOrange else White,
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = if (isSelected) AlertOrange else Gray100
+        )
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Text(
+                text = text,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = if (isSelected) White else TextPrimary
+            )
+        }
+    }
 }
 
 

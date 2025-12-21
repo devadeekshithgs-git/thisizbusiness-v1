@@ -68,6 +68,10 @@ fun SettingsDrawer(
     var ownerName by remember { mutableStateOf("") }
     var upiId by remember { mutableStateOf("") }
     var whatsappReminderMessage by remember { mutableStateOf("") }
+    var gstin by remember { mutableStateOf("") }
+    var legalName by remember { mutableStateOf("") }
+    var businessAddress by remember { mutableStateOf("") }
+    var businessStateCode by remember { mutableStateOf("") }
 
     var showDemoConfirm by remember { mutableStateOf(false) }
     var pendingDemoEnabled by remember { mutableStateOf(false) }
@@ -82,6 +86,10 @@ fun SettingsDrawer(
             ownerName = settings.ownerName
             upiId = settings.upiId
             whatsappReminderMessage = settings.whatsappReminderMessage
+            gstin = settings.gstin
+            legalName = settings.legalName
+            businessAddress = settings.address
+            businessStateCode = if (settings.stateCode == 0) "" else settings.stateCode.toString().padStart(2, '0')
         }
     }
 
@@ -210,12 +218,56 @@ fun SettingsDrawer(
                                     )
 
                                     Spacer(modifier = Modifier.height(18.dp))
+                                    Text(
+                                        "GST BUSINESS DETAILS",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = Blue600
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    KiranaInput(
+                                        value = gstin,
+                                        onValueChange = { gstin = it.uppercase() },
+                                        placeholder = "e.g. 29AABCT1234A1ZZ",
+                                        label = "GSTIN"
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    KiranaInput(
+                                        value = legalName,
+                                        onValueChange = { legalName = it },
+                                        placeholder = "Legal name as per GST registration",
+                                        label = "LEGAL NAME"
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    KiranaInput(
+                                        value = businessStateCode,
+                                        onValueChange = { businessStateCode = it.filter { ch -> ch.isDigit() }.take(2) },
+                                        placeholder = "e.g. 29",
+                                        label = "STATE CODE (2 DIGITS)"
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    KiranaInput(
+                                        value = businessAddress,
+                                        onValueChange = { businessAddress = it },
+                                        placeholder = "Shop address (for invoices/exports)",
+                                        label = "ADDRESS"
+                                    )
+
+                                    Spacer(modifier = Modifier.height(18.dp))
                                     KiranaButton(
                                         text = "✓ Save Settings",
                                         onClick = {
                                             scope.launch {
                                                 store.save(shopName, ownerName, upiId)
                                                 store.saveWhatsAppReminderMessage(whatsappReminderMessage)
+                                                store.saveGstBusinessInfo(
+                                                    gstin = gstin,
+                                                    legalName = legalName,
+                                                    address = businessAddress,
+                                                    stateCode = businessStateCode.toIntOrNull() ?: 0
+                                                )
                                                 onClose()
                                             }
                                         },

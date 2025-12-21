@@ -1,12 +1,16 @@
 package com.kiranaflow.app.ui.components
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Handshake
 import androidx.compose.material.icons.filled.Home
@@ -16,6 +20,7 @@ import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +33,7 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -66,15 +72,16 @@ fun KiranaBottomNav(
         else -> 0
     }
 
-    fun accentForTab(tab: String): Color = when (tab) {
-        "home" -> Blue600
-        "customers" -> Purple600
-        "bill" -> KiranaGreen
-        "inventory" -> AlertOrange
-        "vendors" -> InteractiveCyan
-        else -> KiranaGreen
+    // Solid capsule colors for each tab
+    fun capsuleColorForTab(tab: String): Color = when (tab) {
+        "home" -> Color(0xFF301CA0)      // Deep purple-blue
+        "customers" -> Color(0xFF043915) // Dark green
+        "bill" -> Color(0xFF212121)      // Near black
+        "inventory" -> Color(0xFFE67514) // Orange
+        "vendors" -> Color(0xFFBF124D)   // Magenta/red
+        else -> Color(0xFF212121)
     }
-    val selectedAccent = accentForTab(items[selectedIndex].id)
+    val selectedCapsuleColor = capsuleColorForTab(items[selectedIndex].id)
 
     // Outer container stays full width, but the nav bar itself is a floating capsule with smaller width.
     Box(
@@ -90,64 +97,92 @@ fun KiranaBottomNav(
                 .height(78.dp),
             contentAlignment = Alignment.BottomCenter
         ) {
-            val density = LocalDensity.current
             val totalWidth = maxWidth
-            val tabWidth = totalWidth / items.size
+            val barPaddingH = 10.dp
+            val innerWidth = totalWidth - (barPaddingH * 2)
+            val tabWidth = innerWidth / items.size
 
-            // Size the floating circle relative to tab width so the notch can reach Home/Expenses
-            // without clamping inward on smaller screens.
-            val circleSize = (tabWidth * 0.76f).coerceAtMost(52.dp).coerceAtLeast(44.dp)
-            val circleRadius = circleSize / 2
+            // --- New style (requested): dark glassmorphic capsule + sliding pill highlight ---
+            val barShape = RoundedCornerShape(999.dp)
+            val barHeight = 64.dp
+            // Solid white background with shadow (per latest request)
+            val barBg = Color.White
+            val barBorder = Color.Black.copy(alpha = 0.08f)
+            val iconTint = Color(0xFF111111)
 
-            // Width of the "valley" dip. Keep it <= tabWidth so the notch center can reach the
-            // first/last tab centers without being clamped by `halfCurve`.
-            val notchCurveWidth = (circleSize * 1.8f).coerceAtMost(tabWidth)
-            val halfCurve = notchCurveWidth / 2
-        
-        // Center of item i
-        val indicatorOffset by animateDpAsState(
-            targetValue = run {
-                val center = (tabWidth * selectedIndex) + (tabWidth / 2)
-                // Clamp the notch center so it can reach the first/last tab without visually "jumping"
-                // due to capsule corner constraints.
-                val clampedCenter = center.coerceIn(halfCurve, totalWidth - halfCurve)
-                val raw = clampedCenter - circleRadius
-                val maxOffset = (totalWidth - circleSize).coerceAtLeast(0.dp)
-                raw.coerceIn(0.dp, maxOffset)
-            },
-            animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium),
-            label = "indicator"
-        )
+            // Compute pill width based on label length (clamped), and animate its X offset.
+            // Pill should never overlap other icons: keep it within the selected tab slot.
+            // Rounded rectangle that fits WITHIN the bar with same radius style as menu bar
+            val pillHeight = barHeight - 12.dp // smaller than bar to fit within with padding
+            val pillWidth = (tabWidth - 8.dp).coerceAtLeast(0.dp)
+            // Use half the pill height for perfectly rounded ends (same style as menu bar capsule)
+            val pillCornerRadius = pillHeight / 2
+            val pillOffsetX by animateDpAsState(
+                targetValue = run {
+                    // Align pill to selected slot (inside inner padded area).
+                    val start = tabWidth * selectedIndex
+                    start.coerceIn(0.dp, (innerWidth - pillWidth).coerceAtLeast(0.dp))
+                },
+                animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium),
+                label = "pillOffset"
+            )
 
-            // Custom Shape Background
-            Box(
+            // Background capsule (glassmorphic-ish)
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(64.dp) // Slightly smaller floating bar
-                    .shadow(
-                        elevation = 10.dp,
-                        shape = FluidNotchShape(indicatorOffset + circleRadius, density, notchCurveWidth = notchCurveWidth),
-                        spotColor = Color(0x15000000)
+                    .height(barHeight)
+                    .shadow(14.dp, barShape, spotColor = Color.Black.copy(alpha = 0.28f)),
+                color = barBg,
+                shape = barShape,
+                border = BorderStroke(1.dp, barBorder)
+            ) {}
+
+            // Sliding pill (selected tab) - perfectly rounded capsule within the bar
+            // Solid fill color based on selected tab
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(
+                        x = pillOffsetX + barPaddingH + 4.dp,
+                        y = 4.dp // Slightly lower than center
                     )
-                    .background(Color.White, shape = FluidNotchShape(indicatorOffset + circleRadius, density, notchCurveWidth = notchCurveWidth))
-            )
+                    .height(pillHeight)
+                    .width(pillWidth)
+                    .clip(RoundedCornerShape(pillCornerRadius))
+                    .background(selectedCapsuleColor),
+                contentAlignment = Alignment.Center
+            ) {
+                // Intentionally empty: pill is a background highlight; icons are drawn above it and always visible.
+            }
 
             // Icons Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(64.dp),
+                    .height(barHeight)
+                    .padding(horizontal = barPaddingH),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 items.forEachIndexed { index, item ->
                     val isSelected = index == selectedIndex
-                    // Animate opacity: Hide icon when selected (it moves to circle)
-                    val alpha by animateFloatAsState(if (isSelected) 0f else 1f, animationSpec = tween(300), label = "alpha")
+                    // Icons must always remain visible. Only a subtle scale animation for the selected one.
+                    val scale by animateFloatAsState(
+                        targetValue = if (isSelected) 1.12f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMedium),
+                        label = "iconScale"
+                    )
+                    // Animate icon color: white when selected, dark when not
+                    val animatedIconTint by animateColorAsState(
+                        targetValue = if (isSelected) Color.White else iconTint,
+                        animationSpec = tween(durationMillis = 200),
+                        label = "iconTint"
+                    )
                     
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(64.dp)
+                            .height(barHeight)
                             .combinedClickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
@@ -156,48 +191,16 @@ fun KiranaBottomNav(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (alpha > 0f) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = item.icon,
-                                    contentDescription = item.label,
-                                    tint = Gray400,
-                                    modifier = Modifier.size(24.dp).graphicsLayer(alpha = alpha)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(item.label, fontSize = 10.sp, color = Gray400, fontWeight = FontWeight.Medium, modifier = Modifier.graphicsLayer(alpha = alpha))
-                            }
-                        }
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = item.label,
+                            tint = animatedIconTint,
+                            modifier = Modifier
+                                .size(30.dp) // larger icon (per request)
+                                .graphicsLayer(scaleX = scale, scaleY = scale)
+                        )
                     }
                 }
-            }
-
-            // Floating Selected Icon (The Circle)
-            // Positioned to float in the "pocket"
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .offset(x = indicatorOffset, y = -(circleRadius + 8.dp))
-                    .size(circleSize)
-                    .shadow(12.dp, CircleShape, spotColor = selectedAccent.copy(alpha = 0.4f))
-                    .clip(CircleShape)
-                    .background(selectedAccent)
-                    .combinedClickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { onTabSelected(items[selectedIndex].id) },
-                        onLongClick = { onTabLongPress(items[selectedIndex].id) }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                val selectedItem = items.getOrNull(selectedIndex) ?: items[0]
-                Icon(
-                    imageVector = selectedItem.icon,
-                    contentDescription = selectedItem.label,
-                    tint = Color.White,
-                    // Keep selected icon size consistent with non-selected icons.
-                    modifier = Modifier.size(24.dp)
-                )
             }
         }
     }

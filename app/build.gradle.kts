@@ -69,6 +69,9 @@ android {
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     kotlinOptions {
         freeCompilerArgs += "-Xsuppress-version-warnings"
+        // Workaround: some third-party dependencies may publish Kotlin metadata newer than our compiler.
+        // This allows compilation while keeping Kotlin 1.9.x (Compose compiler 1.5.1) in this project.
+        freeCompilerArgs += "-Xskip-metadata-version-check"
     }
 }
 
@@ -104,6 +107,9 @@ dependencies {
     // Networking (real backend wiring)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // JSON (used for GST export models with @SerializedName)
+    implementation("com.google.code.gson:gson:2.10.1")
+
     // DataStore (Shop Settings persistence)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
@@ -128,6 +134,18 @@ dependencies {
 
     // Biometric auth (privacy overlay unlock)
     implementation("androidx.biometric:biometric:1.1.0")
+
+    // On-device LLM runtime (LiteRT-LM) for FunctionGemma bill extraction
+    //
+    // IMPORTANT: This library is currently compiled with Kotlin metadata 2.2.x, while this app is on Kotlin 1.9.x.
+    // Keeping it on *runtimeOnly* prevents the Kotlin compiler/KSP from reading its metadata, while still packaging
+    // it into the APK. We invoke it via reflection from the OCR flow.
+    runtimeOnly("com.google.ai.edge.litertlm:litertlm-android:0.8.0")
+
+    // GST exports
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("org.apache.poi:poi:5.2.5")
+    implementation("org.apache.poi:poi-ooxml:5.2.5")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

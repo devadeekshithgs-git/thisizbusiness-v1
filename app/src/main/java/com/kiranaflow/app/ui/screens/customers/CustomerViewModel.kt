@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.kiranaflow.app.data.local.CustomerEntity
 import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.local.TransactionEntity
+import com.kiranaflow.app.data.local.TransactionItemEntity
 import com.kiranaflow.app.data.repository.KiranaRepository
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,7 +24,8 @@ data class CustomerState(
     val totalReceivables: Double = 0.0,
     val searchQuery: String = "",
     val isLoading: Boolean = true,
-    val customerTransactions: List<TransactionEntity> = emptyList()
+    val customerTransactions: List<TransactionEntity> = emptyList(),
+    val transactionItemsByTxId: Map<Int, List<TransactionItemEntity>> = emptyMap()
 )
 
 class CustomerViewModel(application: Application) : AndroidViewModel(application) {
@@ -32,6 +34,7 @@ class CustomerViewModel(application: Application) : AndroidViewModel(application
     private val _searchQuery = MutableStateFlow("")
     private val _isLoading = MutableStateFlow(true)
     private val _customerTransactions = MutableStateFlow<List<TransactionEntity>>(emptyList())
+    private val _transactionItemsByTxId = MutableStateFlow<Map<Int, List<TransactionItemEntity>>>(emptyMap())
 
     private val customersFlow: StateFlow<List<CustomerEntity>> =
         combine(repository.customers, _searchQuery) { customers, query ->
@@ -52,14 +55,26 @@ class CustomerViewModel(application: Application) : AndroidViewModel(application
             totalReceivablesFlow,
             _searchQuery,
             _isLoading,
-            _customerTransactions
-        ) { customers, totalReceivables, searchQuery, isLoading, txns ->
+            _customerTransactions,
+            _transactionItemsByTxId
+        ) { values ->
+            @Suppress("UNCHECKED_CAST")
+            val customers = values[0] as List<CustomerEntity>
+            val totalReceivables = values[1] as Double
+            val searchQuery = values[2] as String
+            val isLoading = values[3] as Boolean
+            @Suppress("UNCHECKED_CAST")
+            val txns = values[4] as List<TransactionEntity>
+            @Suppress("UNCHECKED_CAST")
+            val txItems = values[5] as Map<Int, List<TransactionItemEntity>>
+
             CustomerState(
                 customers = customers,
                 totalReceivables = totalReceivables,
                 searchQuery = searchQuery,
                 isLoading = isLoading,
-                customerTransactions = txns
+                customerTransactions = txns,
+                transactionItemsByTxId = txItems
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), CustomerState())
 
@@ -68,6 +83,11 @@ class CustomerViewModel(application: Application) : AndroidViewModel(application
             .onEach { txns ->
                 _customerTransactions.value = txns
             }
+            .launchIn(viewModelScope)
+
+        repository.allTransactionItems
+            .map { items -> items.groupBy { it.transactionId } }
+            .onEach { _transactionItemsByTxId.value = it }
             .launchIn(viewModelScope)
 
         _isLoading.value = false

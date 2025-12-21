@@ -53,6 +53,7 @@ fun VendorDetailSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .fillMaxHeight()
                 .padding(24.dp)
                 .navigationBarsPadding()
                 .imePadding()
@@ -206,7 +207,7 @@ fun VendorDetailSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 220.dp, max = 420.dp),
+                    .weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {

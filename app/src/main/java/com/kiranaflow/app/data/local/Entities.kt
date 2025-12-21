@@ -26,6 +26,8 @@ data class ItemEntity(
     val barcode: String?,
     val costPrice: Double,
     val gstPercentage: Double?,
+    // GST reporting: optional HSN/SAC (4-8 digits). Can be filled later from GST Reports review.
+    val hsnCode: String? = null,
     val reorderPoint: Int,
     val vendorId: Int?,
     val imageUri: String? = null,
@@ -40,6 +42,8 @@ data class PartyEntity(
     val phone: String,
     val type: String, // "CUSTOMER" or "VENDOR"
     val gstNumber: String? = null,
+    // GST reporting: 2-digit state code (e.g., 29 for Karnataka). Optional.
+    val stateCode: Int? = null,
     val balance: Double = 0.0,
     val openingDue: Double = 0.0
 )
@@ -84,7 +88,14 @@ data class TransactionItemEntity(
     val itemNameSnapshot: String, // Snapshot in case item is deleted/changed
     val qty: Int,
     val unit: String = "PCS", // PCS | GRAM
-    val price: Double // Selling price at time of sale
+    val price: Double, // Selling price at time of sale
+    // GST reporting snapshots/overrides (may be 0 until user reviews in GST Reports).
+    val hsnCodeSnapshot: String? = null,
+    val gstRate: Double = 0.0,      // Total GST rate (e.g., 18.0)
+    val taxableValue: Double = 0.0, // price * qty before tax
+    val cgstAmount: Double = 0.0,
+    val sgstAmount: Double = 0.0,
+    val igstAmount: Double = 0.0
 )
 
 @Entity(tableName = "reminders")

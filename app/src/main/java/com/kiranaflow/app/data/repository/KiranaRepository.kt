@@ -864,18 +864,42 @@ class KiranaRepository(private val db: KiranaDatabase) {
      * - Best-effort vendor linkage if vendor can be identified
      */
     suspend fun processVendorBill(parsed: BillOcrParser.ParsedBill): InventoryImportResult {
+        val vendorsSnapshot = runCatching { partyDao.getVendors().first() }.getOrElse { emptyList() }
         val vendorId = runCatching {
             val v = parsed.vendor
             val vName = v.name?.trim().orEmpty()
             val vPhone = v.phone?.filter { it.isDigit() }?.takeLast(10).orEmpty()
-            if (vName.isBlank() || vPhone.length != 10) return@runCatching null
-            val existing = partyDao.findPartyByPhoneAndType(vPhone, "VENDOR")
-            if (existing != null) existing.id
-            else addVendor(vName, vPhone, v.gstNumber)?.id
+            val vGst = v.gstNumber?.trim()?.uppercase().orEmpty()
+
+            // 1) Strong identifiers: phone, GSTIN
+            if (vPhone.length == 10) {
+                val existing = partyDao.findPartyByPhoneAndType(vPhone, "VENDOR")
+                if (existing != null) return@runCatching existing.id
+                // Create only when we have a sane name + phone.
+                if (vName.isNotBlank()) return@runCatching addVendor(vName, vPhone, v.gstNumber)?.id
+            }
+
+            if (vGst.isNotBlank()) {
+                val matchByGst = vendorsSnapshot.firstOrNull { it.gstNumber?.trim()?.uppercase() == vGst }
+                if (matchByGst != null) return@runCatching matchByGst.id
+            }
+
+            // 2) Fallback: fuzzy name match to existing vendors (do NOT auto-create).
+            if (vName.isBlank()) return@runCatching null
+            findBestVendorMatchId(vName, vendorsSnapshot)
         }.getOrNull()
 
         var added = 0
         var updated = 0
+
+        val itemsSnapshot = runCatching { itemDao.getAllItems().first() }.getOrElse { emptyList() }
+        val normalizedItemIndex: Map<String, ItemEntity> = itemsSnapshot
+            .asSequence()
+            .filter { !it.isDeleted }
+            .map { it to normalizeForMatch(it.name) }
+            .filter { (_, norm) -> norm.isNotBlank() }
+            .distinctBy { (_, norm) -> norm }
+            .associate { (item, norm) -> norm to item }
 
         for (it in parsed.items) {
             val name = it.name.trim()
@@ -883,7 +907,10 @@ class KiranaRepository(private val db: KiranaDatabase) {
             val qty = it.qty
             if (qty <= 0) continue
 
-            val existing = itemDao.getItemByName(name)
+            val existing = itemDao.getItemByName(name) ?: run {
+                val norm = normalizeForMatch(name)
+                normalizedItemIndex[norm] ?: findBestItemMatch(name, itemsSnapshot)
+            }
             if (existing != null) {
                 val newStock = existing.stock + qty
                 val newCost = it.unitPrice ?: existing.costPrice
@@ -925,6 +952,71 @@ class KiranaRepository(private val db: KiranaDatabase) {
             vendorId = vendorId,
             vendorName = parsed.vendor.name
         )
+    }
+
+    private fun findBestVendorMatchId(vendorName: String, vendors: List<PartyEntity>): Int? {
+        val target = vendorNameTokens(vendorName)
+        if (target.isEmpty()) return null
+        val best = vendors
+            .asSequence()
+            .map { v -> v to jaccard(target, vendorNameTokens(v.name)) }
+            .maxByOrNull { it.second }
+            ?: return null
+        // Conservative threshold so we don't mis-assign purchases.
+        return best.takeIf { it.second >= 0.72 }?.first?.id
+    }
+
+    private fun findBestItemMatch(itemName: String, items: List<ItemEntity>): ItemEntity? {
+        val target = itemNameTokens(itemName)
+        if (target.isEmpty()) return null
+        val best = items
+            .asSequence()
+            .filter { !it.isDeleted }
+            .map { it to jaccard(target, itemNameTokens(it.name)) }
+            .maxByOrNull { it.second }
+            ?: return null
+        // Slightly lower than vendor threshold, but still conservative.
+        return best.takeIf { it.second >= 0.66 }?.first
+    }
+
+    private fun normalizeForMatch(s: String): String {
+        return s
+            .lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun vendorNameTokens(s: String): Set<String> {
+        val stop = setOf(
+            "pvt", "pvt.", "ltd", "ltd.", "limited", "private", "llp",
+            "store", "stores", "mart", "traders", "trader", "enterprise", "enterprises",
+            "agency", "agencies", "distributor", "distributors", "wholesale", "retail",
+            "and", "&", "the", "co", "co.", "company"
+        )
+        return normalizeForMatch(s)
+            .split(" ")
+            .asSequence()
+            .filter { it.isNotBlank() && it.length >= 2 }
+            .filterNot { it in stop }
+            .toSet()
+    }
+
+    private fun itemNameTokens(s: String): Set<String> {
+        val stop = setOf("pcs", "pc", "nos", "no", "qty", "rate", "mrp", "rs", "inr", "gm", "gms", "grams", "kg", "kgs")
+        return normalizeForMatch(s)
+            .split(" ")
+            .asSequence()
+            .filter { it.isNotBlank() && it.length >= 2 }
+            .filterNot { it in stop }
+            .toSet()
+    }
+
+    private fun jaccard(a: Set<String>, b: Set<String>): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        val inter = a.intersect(b).size.toDouble()
+        val union = (a.size + b.size - inter).toDouble()
+        return if (union <= 0.0) 0.0 else inter / union
     }
 
     suspend fun processInventorySheetRows(rows: List<com.kiranaflow.app.util.InventorySheetParser.InventoryRow>): InventoryImportResult {

@@ -17,6 +17,9 @@ interface ItemDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertItem(item: ItemEntity): Long
 
+    @Query("UPDATE items SET hsnCode = :hsnCode WHERE id = :itemId")
+    suspend fun updateHsnCode(itemId: Int, hsnCode: String?)
+
     @Query("UPDATE items SET isDeleted = 1 WHERE id = :itemId")
     suspend fun softDelete(itemId: Int)
 
@@ -77,6 +80,58 @@ interface PartyDao {
 interface TransactionDao {
     @Query("SELECT * FROM transactions ORDER BY date DESC")
     fun getAllTransactions(): Flow<List<TransactionEntity>>
+
+    /**
+     * Flat, join-based rows for GST exports. One row per line item.
+     *
+     * NOTE: toMillis is exclusive (recommended: startOfNextPeriod).
+     */
+    @Query(
+        """
+        SELECT
+            t.id AS txId,
+            t.title AS txTitle,
+            t.amount AS txAmount,
+            t.date AS txDate,
+            t.customerId AS customerId,
+            p.name AS customerName,
+            p.gstNumber AS customerGstin,
+            p.stateCode AS customerStateCode,
+            ti.id AS itemLineId,
+            ti.itemId AS itemId,
+            ti.itemNameSnapshot AS itemNameSnapshot,
+            ti.qty AS qty,
+            ti.unit AS unit,
+            ti.price AS price,
+            ti.hsnCodeSnapshot AS hsnCodeSnapshot,
+            ti.gstRate AS gstRateSnapshot,
+            ti.taxableValue AS taxableValueSnapshot,
+            ti.cgstAmount AS cgstAmountSnapshot,
+            ti.sgstAmount AS sgstAmountSnapshot,
+            ti.igstAmount AS igstAmountSnapshot,
+            i.hsnCode AS itemHsnCode,
+            i.gstPercentage AS itemGstPercentage
+        FROM transactions t
+        INNER JOIN transaction_items ti ON ti.transactionId = t.id
+        LEFT JOIN parties p ON p.id = t.customerId
+        LEFT JOIN items i ON i.id = ti.itemId
+        WHERE t.type = 'SALE'
+          AND t.date >= :fromMillis
+          AND t.date < :toMillis
+        ORDER BY t.date ASC, t.id ASC, ti.id ASC
+        """
+    )
+    suspend fun getSaleLinesForPeriod(fromMillis: Long, toMillis: Long): List<GstSaleLineRow>
+
+    // --- GST review persistence helpers (best-effort) ---
+    @Query("UPDATE transaction_items SET hsnCodeSnapshot = :hsn WHERE id = :lineId")
+    suspend fun updateLineHsnSnapshot(lineId: Int, hsn: String?)
+
+    @Query("UPDATE transaction_items SET gstRate = :gstRate WHERE id = :lineId")
+    suspend fun updateLineGstRate(lineId: Int, gstRate: Double)
+
+    @Query("UPDATE transaction_items SET taxableValue = :taxableValue WHERE id = :lineId")
+    suspend fun updateLineTaxableValue(lineId: Int, taxableValue: Double)
 
     @Query("SELECT * FROM transactions WHERE id = :id LIMIT 1")
     fun getTransactionById(id: Int): Flow<TransactionEntity?>

@@ -179,6 +179,7 @@ fun CustomersScreen(
             CustomerDetailSheet(
                 customer = customer,
                 transactions = state.customerTransactions,
+                transactionItemsByTxId = state.transactionItemsByTxId,
                 onDismiss = { selectedCustomerId = null },
                 onSavePayment = { amount, paymentMethod ->
                     viewModel.recordPayment(customerId, amount, paymentMethod)

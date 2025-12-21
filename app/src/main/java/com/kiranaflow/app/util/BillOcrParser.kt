@@ -39,6 +39,15 @@ object BillOcrParser {
 
     private val gstRegex = Regex("(?i)\\b\\d{2}[A-Z]{5}\\d{4}[A-Z]{1}[A-Z\\d]{1}Z[A-Z\\d]{1}\\b")
     private val phoneRegex = Regex("(?<!\\d)(\\d{10})(?!\\d)")
+    private val vendorPrefixRegex = Regex("(?i)^(m\\.?\\s*/\\s*s\\.?\\s+|m/s\\s+|ms\\.?\\s+)")
+
+    // Common vendor suffix/stopwords we don't want to over-weight when matching names.
+    private val vendorStopwords = setOf(
+        "pvt", "pvt.", "ltd", "ltd.", "limited", "private", "llp",
+        "store", "stores", "mart", "traders", "trader", "enterprise", "enterprises",
+        "agency", "agencies", "distributor", "distributors", "wholesale", "retail",
+        "and", "&", "the", "co", "co.", "company"
+    )
 
     // Examples:
     // "Sugar 10 45.00 450.00"
@@ -74,13 +83,67 @@ object BillOcrParser {
     }
 
     private fun parseVendor(lines: List<String>): ParsedVendor {
-        val firstNonEmpty = lines.firstOrNull().orEmpty()
         val gst = lines.asSequence().mapNotNull { gstRegex.find(it)?.value }.firstOrNull()
         val phone = lines.asSequence().mapNotNull { phoneRegex.find(it)?.groupValues?.getOrNull(1) }.firstOrNull()
 
-        // Heuristic: vendor name is first line, unless it looks like "Invoice" / "Bill".
-        val name = firstNonEmpty.takeIf { !skipLineRegex.containsMatchIn(it) }?.takeIf { it.length >= 3 }
+        // Heuristics:
+        // - vendor name is usually in the first few lines
+        // - sometimes appears just before GSTIN / Phone line
+        val candidateLines = buildList {
+            addAll(lines.take(10))
+
+            // If GST line exists, try the line immediately before it.
+            val gstIdx = lines.indexOfFirst { gstRegex.containsMatchIn(it) }
+            if (gstIdx > 0) add(lines[gstIdx - 1])
+
+            // If phone line exists, try the line immediately before it.
+            val phoneIdx = lines.indexOfFirst { phoneRegex.containsMatchIn(it) }
+            if (phoneIdx > 0) add(lines[phoneIdx - 1])
+        }
+
+        val name = candidateLines
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filter { it.length >= 3 }
+            .filterNot { skipLineRegex.containsMatchIn(it) }
+            .map { it.replace(vendorPrefixRegex, "").trim() }
+            .filter { it.length >= 3 }
+            .maxByOrNull { vendorNameScore(it) }
+            ?.takeIf { vendorNameScore(it) >= 2 }
+
         return ParsedVendor(name = name, gstNumber = gst, phone = phone)
+    }
+
+    private fun vendorNameScore(s: String): Int {
+        // Higher = more likely a vendor name line.
+        val t = s.trim()
+        if (t.isBlank()) return 0
+        if (t.length > 60) return 0
+
+        val hasLetters = t.any { it.isLetter() }
+        if (!hasLetters) return 0
+
+        // Penalize lines that are mostly numeric/symbols.
+        val digits = t.count { it.isDigit() }
+        if (digits >= (t.length / 2)) return 0
+
+        val tokens = t.lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+
+        val meaningful = tokens.count { it !in vendorStopwords && it.length >= 2 }
+        val stop = tokens.count { it in vendorStopwords }
+
+        var score = 0
+        if (t.length in 4..40) score += 2
+        if (meaningful >= 2) score += 2
+        if (stop >= 1) score += 1
+        if (t.contains("gst", ignoreCase = true)) score -= 2
+        if (t.contains("invoice", ignoreCase = true)) score -= 2
+        if (t.contains("tax", ignoreCase = true) && t.contains("invoice", ignoreCase = true)) score -= 2
+        return score
     }
 
     private fun parseItems(lines: List<String>): List<ParsedBillItem> {
@@ -94,6 +157,9 @@ object BillOcrParser {
             if (skipLineRegex.containsMatchIn(line)) continue
             if (line.length < 3) continue
             if (headerLineRegex.containsMatchIn(line)) continue
+            // Skip lines that are clearly headings/metadata (often mis-parsed as items)
+            if (line.length <= 4) continue
+            if (line.count { it.isDigit() } >= (line.length * 0.7)) continue
 
             // Try common "columns" pattern: name qty unit total.
             val m1 = spacedColumnsRegex.find(line)

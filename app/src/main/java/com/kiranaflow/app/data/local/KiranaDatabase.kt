@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReminderEntity::class,
         OutboxEntity::class
     ],
-    version = 11, // v11: add items.stockKg for loose-item stock stored in KG
+    version = 12, // v12: GST reporting fields (items.hsnCode, parties.stateCode, transaction_items tax snapshots)
     exportSchema = false
 )
 abstract class KiranaDatabase : RoomDatabase() {
@@ -63,6 +63,24 @@ abstract class KiranaDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Items: GST HSN/SAC code (nullable)
+                db.execSQL("ALTER TABLE items ADD COLUMN hsnCode TEXT")
+
+                // Parties: 2-digit state code (nullable)
+                db.execSQL("ALTER TABLE parties ADD COLUMN stateCode INTEGER")
+
+                // Transaction items: GST snapshots/overrides (default 0)
+                db.execSQL("ALTER TABLE transaction_items ADD COLUMN hsnCodeSnapshot TEXT")
+                db.execSQL("ALTER TABLE transaction_items ADD COLUMN gstRate REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE transaction_items ADD COLUMN taxableValue REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE transaction_items ADD COLUMN cgstAmount REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE transaction_items ADD COLUMN sgstAmount REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE transaction_items ADD COLUMN igstAmount REAL NOT NULL DEFAULT 0.0")
+            }
+        }
+
         fun getDatabase(context: Context): KiranaDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -70,7 +88,7 @@ abstract class KiranaDatabase : RoomDatabase() {
                     KiranaDatabase::class.java,
                     "kirana_database"
                 )
-                .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+                .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
                 .fallbackToDestructiveMigration()
                 .build()
                 INSTANCE = instance
