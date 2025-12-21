@@ -13,12 +13,10 @@ import java.util.UUID
 data class AppPrefs(
     val demoModeEnabled: Boolean = false,
     val demoResetRequested: Boolean = false,
-    val devSimulateSyncSuccess: Boolean = false,
     val deviceId: String? = null,
-    val useRealBackend: Boolean = false,
     val lastSyncAttemptAtMillis: Long? = null,
     val lastSyncMessage: String? = null,
-    val darkModeEnabled: Boolean = false,
+    val lastBackupAtMillis: Long? = null,
     /**
      * If > currentTimeMillis, financial numbers may be revealed.
      * When 0 or expired, show privacy overlay (masked values).
@@ -32,12 +30,10 @@ class AppPrefsStore(private val context: Context) {
     private object Keys {
         val demoModeEnabled = booleanPreferencesKey("demo_mode_enabled")
         val demoResetRequested = booleanPreferencesKey("demo_reset_requested")
-        val devSimulateSyncSuccess = booleanPreferencesKey("dev_simulate_sync_success")
         val deviceId = stringPreferencesKey("device_id")
-        val useRealBackend = booleanPreferencesKey("use_real_backend")
         val lastSyncAttemptAtMillis = longPreferencesKey("last_sync_attempt_at_millis")
         val lastSyncMessage = stringPreferencesKey("last_sync_message")
-        val darkModeEnabled = booleanPreferencesKey("dark_mode_enabled")
+        val lastBackupAtMillis = longPreferencesKey("last_backup_at_millis")
         val privacyUnlockedUntilMillis = longPreferencesKey("privacy_unlocked_until_millis")
     }
 
@@ -45,12 +41,10 @@ class AppPrefsStore(private val context: Context) {
         AppPrefs(
             demoModeEnabled = p[Keys.demoModeEnabled] ?: false,
             demoResetRequested = p[Keys.demoResetRequested] ?: false,
-            devSimulateSyncSuccess = p[Keys.devSimulateSyncSuccess] ?: false,
             deviceId = p[Keys.deviceId],
-            useRealBackend = p[Keys.useRealBackend] ?: false,
             lastSyncAttemptAtMillis = p[Keys.lastSyncAttemptAtMillis],
             lastSyncMessage = p[Keys.lastSyncMessage],
-            darkModeEnabled = p[Keys.darkModeEnabled] ?: false,
+            lastBackupAtMillis = p[Keys.lastBackupAtMillis],
             privacyUnlockedUntilMillis = p[Keys.privacyUnlockedUntilMillis] ?: 0L
         )
     }
@@ -64,14 +58,6 @@ class AppPrefsStore(private val context: Context) {
      */
     suspend fun requestDemoReset(reset: Boolean) {
         context.appPrefsDataStore.edit { it[Keys.demoResetRequested] = reset }
-    }
-
-    suspend fun setDevSimulateSyncSuccess(enabled: Boolean) {
-        context.appPrefsDataStore.edit { it[Keys.devSimulateSyncSuccess] = enabled }
-    }
-
-    suspend fun setUseRealBackend(enabled: Boolean) {
-        context.appPrefsDataStore.edit { it[Keys.useRealBackend] = enabled }
     }
 
     suspend fun getOrCreateDeviceId(): String {
@@ -93,8 +79,8 @@ class AppPrefsStore(private val context: Context) {
         }
     }
 
-    suspend fun setDarkModeEnabled(enabled: Boolean) {
-        context.appPrefsDataStore.edit { it[Keys.darkModeEnabled] = enabled }
+    suspend fun setLastBackupAt(atMillis: Long) {
+        context.appPrefsDataStore.edit { it[Keys.lastBackupAtMillis] = atMillis }
     }
 
     suspend fun setPrivacyUnlockedUntil(untilMillis: Long) {

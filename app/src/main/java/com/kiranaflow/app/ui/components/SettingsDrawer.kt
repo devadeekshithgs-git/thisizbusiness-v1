@@ -1,21 +1,24 @@
 package com.kiranaflow.app.ui.components
 
+import android.content.Intent
+import android.os.Process
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,6 +38,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.util.StubSyncEngine
+import com.kiranaflow.app.util.LocalBackupManager
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.window.Dialog
@@ -51,7 +55,7 @@ fun SettingsDrawer(
 ) {
     val context = LocalContext.current
     val store = remember(context) { ShopSettingsStore(context) }
-    val settings by store.settings.collectAsState(initial = ShopSettings("", "", "", ""))
+    val settings by store.settings.collectAsState(initial = ShopSettings())
     val appPrefsStore = remember(context) { AppPrefsStore(context) }
     val appPrefs by appPrefsStore.prefs.collectAsState(initial = AppPrefs())
     val db = remember(context) { KiranaDatabase.getDatabase(context) }
@@ -63,15 +67,33 @@ fun SettingsDrawer(
     val scope = rememberCoroutineScope()
 
     var expandedShop by remember { mutableStateOf(true) }
+    var expandedBackup by remember { mutableStateOf(false) }
     var expandedDev by remember { mutableStateOf(false) }
     var shopName by remember { mutableStateOf("") }
     var ownerName by remember { mutableStateOf("") }
     var upiId by remember { mutableStateOf("") }
     var whatsappReminderMessage by remember { mutableStateOf("") }
+    var receiptTemplate by remember { mutableStateOf("") }
     var gstin by remember { mutableStateOf("") }
     var legalName by remember { mutableStateOf("") }
     var businessAddress by remember { mutableStateOf("") }
     var businessStateCode by remember { mutableStateOf("") }
+
+    val defaultReceiptTemplate = remember {
+        // Keep it plain and easy to edit; no emojis so it works in all fonts.
+        buildString {
+            append("*{shop}*\n")
+            append("Bill Receipt\n")
+            append("{date}\n")
+            append("{customer}\n\n")
+            append("{items}\n\n")
+            append("*TOTAL: ₹{total}*\n")
+            append("Payment: {payment}\n")
+            append("UPI: {upi_id}\n")
+            append("{upi_link}\n")
+            append("\nPowered by thisizbusiness")
+        }
+    }
 
     var showDemoConfirm by remember { mutableStateOf(false) }
     var pendingDemoEnabled by remember { mutableStateOf(false) }
@@ -80,12 +102,60 @@ fun SettingsDrawer(
     var outboxFilter by remember { mutableStateOf("UNSYNCED") } // ALL | UNSYNCED | FAILED | DONE
     val lastSyncFmt = remember { SimpleDateFormat("dd MMM yy, hh:mm a", Locale.getDefault()) }
 
+    val backupManager = remember(context) { LocalBackupManager(context) }
+    var isBackupBusy by remember { mutableStateOf(false) }
+    var pendingRestoreUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var showRestoreConfirm by remember { mutableStateOf(false) }
+
+    fun restartAppNow() {
+        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        if (intent != null) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            context.startActivity(intent)
+        }
+        Process.killProcess(Process.myPid())
+    }
+
+    val createBackupLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(LocalBackupManager.MIME_ZIP)) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            scope.launch {
+                try {
+                    isBackupBusy = true
+                    val now = System.currentTimeMillis()
+                    backupManager.exportTo(
+                        uri = uri,
+                        beforeCopy = {
+                            // Best-effort: checkpoint WAL -> DB so the backup is consistent.
+                            val c = db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)")
+                            c.close()
+                        }
+                    )
+                    appPrefsStore.setLastBackupAt(now)
+                    Toast.makeText(context, "Backup saved.", Toast.LENGTH_LONG).show()
+                } catch (t: Throwable) {
+                    Toast.makeText(context, "Backup failed: ${t.message}", Toast.LENGTH_LONG).show()
+                } finally {
+                    isBackupBusy = false
+                }
+            }
+        }
+
+    val openRestoreLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            pendingRestoreUri = uri
+            showRestoreConfirm = true
+        }
+
     LaunchedEffect(isOpen, settings) {
         if (isOpen) {
             shopName = settings.shopName
             ownerName = settings.ownerName
             upiId = settings.upiId
             whatsappReminderMessage = settings.whatsappReminderMessage
+            // Pre-fill with default so user can edit immediately.
+            receiptTemplate = settings.receiptTemplate.ifBlank { defaultReceiptTemplate }
             gstin = settings.gstin
             legalName = settings.legalName
             businessAddress = settings.address
@@ -217,6 +287,55 @@ fun SettingsDrawer(
                                         label = "WHATSAPP REMINDER MESSAGE"
                                     )
 
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        "RECEIPT TEMPLATE (WHATSAPP)",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = Purple600
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        "Editable receipt structure. Placeholders: {shop}, {customer}, {date}, {items}, {total}, {payment}, {upi_id}, {upi_link}",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = TextSecondary)
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    OutlinedTextField(
+                                        value = receiptTemplate,
+                                        onValueChange = { receiptTemplate = it },
+                                        placeholder = { Text(defaultReceiptTemplate, color = Gray400, fontSize = 12.sp) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 160.dp),
+                                        minLines = 6,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedContainerColor = White,
+                                            unfocusedContainerColor = White,
+                                            focusedTextColor = TextPrimary,
+                                            unfocusedTextColor = TextPrimary,
+                                            focusedBorderColor = Purple600,
+                                            unfocusedBorderColor = Gray200
+                                        ),
+                                        shape = RoundedCornerShape(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                        OutlinedButton(
+                                            onClick = { receiptTemplate = "" },
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.outlinedButtonColors(containerColor = BgPrimary, contentColor = TextPrimary),
+                                            border = null
+                                        ) { Text("Clear", fontWeight = FontWeight.Bold) }
+                                        OutlinedButton(
+                                            onClick = { receiptTemplate = defaultReceiptTemplate },
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.outlinedButtonColors(containerColor = BgPrimary, contentColor = Purple600),
+                                            border = null
+                                        ) { Text("Reset to default", fontWeight = FontWeight.Bold) }
+                                    }
+
                                     Spacer(modifier = Modifier.height(18.dp))
                                     Text(
                                         "GST BUSINESS DETAILS",
@@ -262,6 +381,7 @@ fun SettingsDrawer(
                                             scope.launch {
                                                 store.save(shopName, ownerName, upiId)
                                                 store.saveWhatsAppReminderMessage(whatsappReminderMessage)
+                                                store.saveReceiptTemplate(receiptTemplate)
                                                 store.saveGstBusinessInfo(
                                                     gstin = gstin,
                                                     legalName = legalName,
@@ -280,33 +400,75 @@ fun SettingsDrawer(
 
                         item { Divider(color = Gray200) }
 
-                        // Appearance settings (Dark Mode)
+                        // Backup & Restore
                         item {
                             ListItem(
-                                headlineContent = { Text("Appearance", fontWeight = FontWeight.Bold, color = TextPrimary) },
-                                leadingContent = { 
-                                    Icon(
-                                        if (appPrefs.darkModeEnabled) Icons.Default.DarkMode else Icons.Default.LightMode, 
-                                        contentDescription = null, 
-                                        tint = if (appPrefs.darkModeEnabled) Purple600 else AlertOrange
-                                    ) 
-                                },
+                                headlineContent = { Text("Backup & Restore", fontWeight = FontWeight.Bold, color = TextPrimary) },
+                                leadingContent = { Icon(Icons.Default.Menu, contentDescription = null, tint = TextSecondary) },
                                 trailingContent = {
-                                    Switch(
-                                        checked = appPrefs.darkModeEnabled,
-                                        onCheckedChange = { enabled ->
-                                            scope.launch { appPrefsStore.setDarkModeEnabled(enabled) }
-                                        }
+                                    Icon(
+                                        if (expandedBackup) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = TextSecondary
                                     )
                                 },
-                                supportingContent = {
+                                modifier = Modifier.clickable(enabled = !isBackupBusy) { expandedBackup = !expandedBackup }
+                            )
+                        }
+
+                        if (expandedBackup) {
+                            item {
+                                Column(
+                                    modifier = Modifier
+                                        .padding(horizontal = 18.dp)
+                                        .fillMaxWidth()
+                                ) {
+                                    Spacer(modifier = Modifier.height(8.dp))
                                     Text(
-                                        if (appPrefs.darkModeEnabled) "Dark mode enabled" else "Light mode enabled",
+                                        "Export a backup file to your phone or Google Drive. Restore will overwrite local data.",
                                         color = TextSecondary,
                                         fontSize = 12.sp
                                     )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        buildString {
+                                            append("Last backup: ")
+                                            append(appPrefs.lastBackupAtMillis?.let { lastSyncFmt.format(Date(it)) } ?: "—")
+                                        },
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    if (isBackupBusy) {
+                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            val name = "thisizbusiness_backup_${System.currentTimeMillis()}.zip"
+                                            createBackupLauncher.launch(name)
+                                        },
+                                        enabled = !isBackupBusy,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.outlinedButtonColors(containerColor = BgPrimary, contentColor = Blue600),
+                                        border = null
+                                    ) { Text("Backup now (export file)", fontWeight = FontWeight.Bold) }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    OutlinedButton(
+                                        onClick = { openRestoreLauncher.launch(arrayOf("*/*")) },
+                                        enabled = !isBackupBusy,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.outlinedButtonColors(containerColor = BgPrimary, contentColor = LossRed),
+                                        border = null
+                                    ) { Text("Restore (import file)", fontWeight = FontWeight.Bold) }
+
+                                    Spacer(modifier = Modifier.height(18.dp))
                                 }
-                            )
+                            }
                         }
 
                         item { Divider(color = Gray200) }
@@ -393,48 +555,21 @@ fun SettingsDrawer(
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text("Simulate sync success (dev)", fontWeight = FontWeight.Bold, color = TextPrimary)
-                                            Text("Marks validated outbox entries as DONE", color = TextSecondary, fontSize = 12.sp)
+                                            Text("Supabase Cloud Sync", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                            Text("When online, pending changes are pushed automatically.", color = TextSecondary, fontSize = 12.sp)
                                         }
-                                        Switch(
-                                            checked = appPrefs.devSimulateSyncSuccess,
-                                            onCheckedChange = { enabled ->
-                                                scope.launch { appPrefsStore.setDevSimulateSyncSuccess(enabled) }
-                                            }
-                                        )
                                     }
 
                                     Spacer(modifier = Modifier.height(10.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text("Use real backend (dev)", fontWeight = FontWeight.Bold, color = TextPrimary)
-                                            Text("Sends sync envelopes to BuildConfig backend URL", color = TextSecondary, fontSize = 12.sp)
-                                        }
-                                        Switch(
-                                            checked = appPrefs.useRealBackend,
-                                            onCheckedChange = { enabled ->
-                                                scope.launch { appPrefsStore.setUseRealBackend(enabled) }
-                                            }
-                                        )
-                                    }
                                     if (com.kiranaflow.app.BuildConfig.BACKEND_BASE_URL.isBlank()) {
                                         Spacer(modifier = Modifier.height(6.dp))
                                         Text(
-                                            "Backend URL not configured. Set KIRANAFLOW_BACKEND_BASE_URL in your local gradle.properties.",
+                                            "Supabase sync endpoint not configured. Set KIRANAFLOW_BACKEND_BASE_URL in your local gradle.properties.",
                                             color = LossRed,
                                             fontSize = 12.sp
                                         )
                                     }
                                     Spacer(modifier = Modifier.height(10.dp))
-                                    val syncButtonLabel = when {
-                                        appPrefs.useRealBackend && com.kiranaflow.app.BuildConfig.BACKEND_BASE_URL.isNotBlank() -> "Sync now"
-                                        appPrefs.devSimulateSyncSuccess -> "Sync now (simulate)"
-                                        else -> "Sync now"
-                                    }
                                     OutlinedButton(
                                         onClick = {
                                             scope.launch {
@@ -447,7 +582,7 @@ fun SettingsDrawer(
                                         colors = ButtonDefaults.outlinedButtonColors(containerColor = BgPrimary, contentColor = TextPrimary),
                                         border = null
                                     ) {
-                                        Text(syncButtonLabel, fontWeight = FontWeight.Bold)
+                                        Text("Sync now", fontWeight = FontWeight.Bold)
                                     }
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Text(
@@ -550,7 +685,7 @@ fun SettingsDrawer(
                             onClick = {
                                 scope.launch {
                                     val now = System.currentTimeMillis()
-                                    val res = syncEngine.syncFailedOnly(simulateSuccess = appPrefs.devSimulateSyncSuccess)
+                                    val res = syncEngine.syncFailedOnly()
                                     appPrefsStore.setLastSyncAttempt(now, res.message)
                                 }
                             },
@@ -566,7 +701,7 @@ fun SettingsDrawer(
                             onClick = {
                                 scope.launch {
                                     val now = System.currentTimeMillis()
-                                    val res = syncEngine.syncPendingOnly(simulateSuccess = appPrefs.devSimulateSyncSuccess)
+                                    val res = syncEngine.syncPendingOnly()
                                     appPrefsStore.setLastSyncAttempt(now, res.message)
                                 }
                             },
@@ -713,7 +848,7 @@ fun SettingsDrawer(
                                                 onClick = {
                                                     scope.launch {
                                                         val now = System.currentTimeMillis()
-                                                        val res = syncEngine.retryEntry(e.id, simulateSuccess = appPrefs.devSimulateSyncSuccess)
+                                                        val res = syncEngine.retryEntry(e.id)
                                                         appPrefsStore.setLastSyncAttempt(now, res.message)
                                                     }
                                                 },
@@ -809,6 +944,56 @@ fun SettingsDrawer(
                 ) { Text("Yes, apply") }
             },
             dismissButton = { TextButton(onClick = { showDemoConfirm = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showRestoreConfirm) {
+        AlertDialog(
+            onDismissRequest = {
+                showRestoreConfirm = false
+                pendingRestoreUri = null
+            },
+            title = { Text("Restore from backup?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "This will overwrite all local data on this device (items, customers, vendors, bills, GST settings).\n\nAfter restore, the app will restart."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val uri = pendingRestoreUri
+                        if (uri == null) {
+                            showRestoreConfirm = false
+                            return@TextButton
+                        }
+                        scope.launch {
+                            try {
+                                isBackupBusy = true
+                                showRestoreConfirm = false
+                                // Close the Room DB before replacing files.
+                                db.close()
+                                backupManager.restoreFrom(uri)
+                                Toast.makeText(context, "Restore complete. Restarting…", Toast.LENGTH_LONG).show()
+                                restartAppNow()
+                            } catch (t: Throwable) {
+                                Toast.makeText(context, "Restore failed: ${t.message}", Toast.LENGTH_LONG).show()
+                            } finally {
+                                isBackupBusy = false
+                                pendingRestoreUri = null
+                            }
+                        }
+                    }
+                ) { Text("Yes, restore") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showRestoreConfirm = false
+                        pendingRestoreUri = null
+                    }
+                ) { Text("Cancel") }
+            }
         )
     }
 }

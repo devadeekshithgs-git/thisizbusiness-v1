@@ -266,7 +266,7 @@ fun PartiesScreen(
 ) {
     val context = LocalContext.current
     val shopSettingsStore = remember(context) { ShopSettingsStore(context) }
-    val shopSettings by shopSettingsStore.settings.collectAsState(initial = ShopSettings("", "", "", ""))
+    val shopSettings by shopSettingsStore.settings.collectAsState(initial = ShopSettings())
 
     val list by if(type == "CUSTOMER") viewModel.filteredCustomers.collectAsState() else viewModel.filteredVendors.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -327,94 +327,106 @@ fun PartiesScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             val title = if (type == "CUSTOMER") "Customer Khata" else "Expenses"
             val subtitle = if (type == "CUSTOMER") "Manage udhaar & payments" else "Track purchases & expenses"
-            ValleyTopBar(
+            val tabId = if (type == "CUSTOMER") "customers" else "vendors"
+            val accent = tabCapsuleColor(tabId)
+            SolidTopBar(
                 title = title,
                 subtitle = subtitle,
-                actionIcon = Icons.Default.Add,
-                onAction = { showAddModal = true },
                 onSettings = onOpenSettings,
-                actionColor = if (type == "CUSTOMER") Purple600 else InteractiveCyan,
-                actionIconTint = White
+                containerColor = accent
             )
-            Spacer(modifier = Modifier.height(18.dp))
 
-            Column(modifier = Modifier.padding(horizontal = 24.dp)) {
-                // Stats Card (Simplified for Customers)
+            // Use single LazyColumn for entire content to support landscape scrolling
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = PaddingValues(top = 18.dp, bottom = 100.dp)
+            ) {
+                // Stats Card and controls as header items
                 if (type == "CUSTOMER") {
-                   val totalDue = list.filter { it.balance > 0 }.sumOf { it.balance }
-                   Card(
-                       modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
-                       colors = CardDefaults.cardColors(containerColor = KiranaGreen),
-                       shape = RoundedCornerShape(24.dp)
-                   ) {
-                       Column(modifier = Modifier.padding(24.dp)) {
-                           Text("TOTAL RECEIVABLES", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = KiranaGreenLight, letterSpacing = 1.sp)
-                           val rawDue = Formatters.formatInrCurrency(totalDue, fractionDigits = 0, useAbsolute = true)
-                           Text(
-                               rawDue,
-                               fontSize = 36.sp,
-                               fontWeight = FontWeight.Black,
-                               color = White
-                           )
-                           Text("Money pending from market", fontSize = 12.sp, color = KiranaGreenLight)
-                       }
-                   }
-
-                    KiranaInput(
-                        value = searchQuery,
-                        onValueChange = viewModel::setSearchQuery,
-                        placeholder = "Search customers...",
-                        icon = Icons.Default.Search,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                if (!hasContactsPermission) {
-                                    contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
-                                } else {
-                                    showContactsImport = true
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(containerColor = BgPrimary, contentColor = TextPrimary)
+                    val totalDue = list.filter { it.balance > 0 }.sumOf { it.balance }
+                    
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = KiranaGreen),
+                            shape = RoundedCornerShape(24.dp)
                         ) {
-                            Icon(Icons.Default.PermContactCalendar, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Import from Contacts", fontWeight = FontWeight.Bold)
+                            Column(modifier = Modifier.padding(24.dp)) {
+                                Text("TOTAL RECEIVABLES", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = KiranaGreenLight, letterSpacing = 1.sp)
+                                val rawDue = Formatters.formatInrCurrency(totalDue, fractionDigits = 0, useAbsolute = true)
+                                Text(
+                                    rawDue,
+                                    fontSize = 36.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = White
+                                )
+                                Text("Money pending from market", fontSize = 12.sp, color = KiranaGreenLight)
+                            }
+                        }
+                    }
+
+                    item {
+                        KiranaInput(
+                            value = searchQuery,
+                            onValueChange = viewModel::setSearchQuery,
+                            placeholder = "Search customers...",
+                            icon = Icons.Default.Search,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (!hasContactsPermission) {
+                                        contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                                    } else {
+                                        showContactsImport = true
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(containerColor = BgPrimary, contentColor = TextPrimary)
+                            ) {
+                                Icon(Icons.Default.PermContactCalendar, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Import from Contacts", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
 
                     // Bulk selection controls
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (selectionMode) {
-                            Text("${selectedPartyIds.size} selected", fontWeight = FontWeight.Bold, color = TextPrimary)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(
-                                    onClick = { showBulkDeleteConfirm = true },
-                                    enabled = selectedPartyIds.isNotEmpty()
-                                ) { Text("Delete", color = LossRed, fontWeight = FontWeight.Bold) }
-                                TextButton(
-                                    onClick = {
-                                        selectionMode = false
-                                        selectedPartyIds = emptySet()
-                                    }
-                                ) { Text("Cancel", fontWeight = FontWeight.Bold) }
-                            }
-                        } else {
-                            TextButton(onClick = { selectionMode = true }) {
-                                Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (selectionMode) {
+                                Text("${selectedPartyIds.size} selected", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(
+                                        onClick = { showBulkDeleteConfirm = true },
+                                        enabled = selectedPartyIds.isNotEmpty()
+                                    ) { Text("Delete", color = LossRed, fontWeight = FontWeight.Bold) }
+                                    TextButton(
+                                        onClick = {
+                                            selectionMode = false
+                                            selectedPartyIds = emptySet()
+                                        }
+                                    ) { Text("Cancel", fontWeight = FontWeight.Bold) }
+                                }
+                            } else {
+                                TextButton(onClick = { selectionMode = true }) {
+                                    Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                                }
                             }
                         }
                     }
@@ -422,172 +434,183 @@ fun PartiesScreen(
                     val totalPayables = list.filter { it.balance < 0 }.sumOf { kotlin.math.abs(it.balance) }
                     val itemsToReorder = lowStockItems.size
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 16.dp)) {
-                        Card(
-                            modifier = Modifier.weight(1f).clickable { onOpenPayables() },
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = BgPrimary)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text("TOTAL PAYABLES", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
-                                Spacer(modifier = Modifier.height(6.dp))
-                                val rawPayables = Formatters.formatInrCurrency(totalPayables, fractionDigits = 0, useAbsolute = true)
-                                Text(
-                                    rawPayables,
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Black,
-                                    color = LossRed
-                                )
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                            Card(
+                                modifier = Modifier.weight(1f).clickable { onOpenPayables() },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = BgPrimary)
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text("TOTAL PAYABLES", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    val rawPayables = Formatters.formatInrCurrency(totalPayables, fractionDigits = 0, useAbsolute = true)
+                                    Text(
+                                        rawPayables,
+                                        fontSize = 22.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = LossRed
+                                    )
+                                }
                             }
-                        }
-                        Card(
-                            modifier = Modifier.weight(1f).clickable { onOpenReorder() },
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = BgPrimary)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text("ITEMS TO REORDER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(itemsToReorder.toString(), fontSize = 22.sp, fontWeight = FontWeight.Black, color = TextPrimary)
+                            Card(
+                                modifier = Modifier.weight(1f).clickable { onOpenReorder() },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = BgPrimary)
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text("ITEMS TO REORDER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(itemsToReorder.toString(), fontSize = 22.sp, fontWeight = FontWeight.Black, color = TextPrimary)
+                                }
                             }
                         }
                     }
 
-                    KiranaInput(
-                        value = searchQuery,
-                        onValueChange = viewModel::setSearchQuery,
-                        placeholder = "Search vendors...",
-                        icon = Icons.Default.Search,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
+                    item {
+                        KiranaInput(
+                            value = searchQuery,
+                            onValueChange = viewModel::setSearchQuery,
+                            placeholder = "Search vendors...",
+                            icon = Icons.Default.Search,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
                     // Bulk selection controls
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (selectionMode) {
-                            Text("${selectedPartyIds.size} selected", fontWeight = FontWeight.Bold, color = TextPrimary)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(
-                                    onClick = { showBulkDeleteConfirm = true },
-                                    enabled = selectedPartyIds.isNotEmpty()
-                                ) { Text("Delete", color = LossRed, fontWeight = FontWeight.Bold) }
-                                TextButton(
-                                    onClick = {
-                                        selectionMode = false
-                                        selectedPartyIds = emptySet()
-                                    }
-                                ) { Text("Cancel", fontWeight = FontWeight.Bold) }
-                            }
-                        } else {
-                            TextButton(onClick = { selectionMode = true }) {
-                                Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (selectionMode) {
+                                Text("${selectedPartyIds.size} selected", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(
+                                        onClick = { showBulkDeleteConfirm = true },
+                                        enabled = selectedPartyIds.isNotEmpty()
+                                    ) { Text("Delete", color = LossRed, fontWeight = FontWeight.Bold) }
+                                    TextButton(
+                                        onClick = {
+                                            selectionMode = false
+                                            selectedPartyIds = emptySet()
+                                        }
+                                    ) { Text("Cancel", fontWeight = FontWeight.Bold) }
+                                }
+                            } else {
+                                TextButton(onClick = { selectionMode = true }) {
+                                    Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                                }
                             }
                         }
                     }
                 }
 
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(bottom = 100.dp)
-                ) {
-                    items(list, key = { it.id }) { party ->
-                        val isSelected = selectedPartyIds.contains(party.id)
-                        val onToggle = {
-                            selectedPartyIds = if (isSelected) selectedPartyIds - party.id else selectedPartyIds + party.id
-                        }
-                        if (type == "CUSTOMER") {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (selectionMode) {
-                                    Checkbox(
-                                        checked = isSelected,
-                                        onCheckedChange = { onToggle() },
-                                        modifier = Modifier.padding(start = 8.dp, end = 8.dp)
-                                    )
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .combinedClickable(
-                                            onClick = {
-                                                if (selectionMode) onToggle()
-                                                else customerDetailPartyId = party.id
-                                            },
-                                            onLongClick = {
-                                                if (!selectionMode) selectionMode = true
-                                                selectedPartyIds = selectedPartyIds + party.id
-                                            }
-                                        )
-                                ) {
-                                    CustomerCard(
-                                        customer = party,
-                                        onRemind = { c ->
-                                            // Only remind for due customers.
-                                            if (c.balance <= 0) return@CustomerCard
-                                            val phone = WhatsAppHelper.normalizeIndianPhone(c.phone)
-                                            val amount = kotlin.math.abs(c.balance).toInt()
-                                            val msg = WhatsAppHelper.buildReminderMessage(
-                                                template = shopSettings.whatsappReminderMessage,
-                                                customerName = c.name,
-                                                dueAmountInr = amount,
-                                                shopName = shopSettings.shopName,
-                                                upiId = shopSettings.upiId
-                                            )
-                                            WhatsAppHelper.openWhatsApp(context, phone, msg)
-                                        },
-                                        onRecordPayment = { if (!selectionMode) payingParty = party },
-                                        onEdit = { if (!selectionMode) editingParty = party },
-                                        onDelete = { if (!selectionMode) deletingParty = party }
-                                    )
-                                }
+                // Party list items
+                items(list, key = { it.id }) { party ->
+                    val isSelected = selectedPartyIds.contains(party.id)
+                    val onToggle = {
+                        selectedPartyIds = if (isSelected) selectedPartyIds - party.id else selectedPartyIds + party.id
+                    }
+                    if (type == "CUSTOMER") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (selectionMode) {
+                                Checkbox(
+                                    checked = isSelected,
+                                    onCheckedChange = { onToggle() },
+                                    modifier = Modifier.padding(start = 8.dp, end = 8.dp)
+                                )
                             }
-                        } else {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (selectionMode) onToggle()
+                                            else customerDetailPartyId = party.id
+                                        },
+                                        onLongClick = {
+                                            if (!selectionMode) selectionMode = true
+                                            selectedPartyIds = selectedPartyIds + party.id
+                                        }
+                                    )
                             ) {
-                                if (selectionMode) {
-                                    Checkbox(
-                                        checked = isSelected,
-                                        onCheckedChange = { onToggle() },
-                                        modifier = Modifier.padding(start = 8.dp, end = 8.dp)
-                                    )
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .combinedClickable(
-                                            onClick = {
-                                                if (selectionMode) onToggle()
-                                                else vendorDetailPartyId = party.id
-                                            },
-                                            onLongClick = {
-                                                if (!selectionMode) selectionMode = true
-                                                selectedPartyIds = selectedPartyIds + party.id
-                                            }
+                                CustomerCard(
+                                    customer = party,
+                                    onRemind = { c ->
+                                        // Only remind for due customers.
+                                        if (c.balance <= 0) return@CustomerCard
+                                        val phone = WhatsAppHelper.normalizeIndianPhone(c.phone)
+                                        val amount = kotlin.math.abs(c.balance).toInt()
+                                        val msg = WhatsAppHelper.buildReminderMessage(
+                                            template = shopSettings.whatsappReminderMessage,
+                                            customerName = c.name,
+                                            dueAmountInr = amount,
+                                            shopName = shopSettings.shopName,
+                                            upiId = shopSettings.upiId
                                         )
-                                ) {
-                                    VendorCard(
-                                        vendor = party,
-                                        onPayNow = { if (!selectionMode) payingParty = party },
-                                        onAddDue = { if (!selectionMode) recordDueParty = party },
-                                        onEdit = { if (!selectionMode) editingParty = party },
-                                        onDelete = { if (!selectionMode) deletingParty = party }
+                                        WhatsAppHelper.openWhatsApp(context, phone, msg)
+                                    },
+                                    onRecordPayment = { if (!selectionMode) payingParty = party },
+                                    onEdit = { if (!selectionMode) editingParty = party },
+                                    onDelete = { if (!selectionMode) deletingParty = party }
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (selectionMode) {
+                                Checkbox(
+                                    checked = isSelected,
+                                    onCheckedChange = { onToggle() },
+                                    modifier = Modifier.padding(start = 8.dp, end = 8.dp)
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (selectionMode) onToggle()
+                                            else vendorDetailPartyId = party.id
+                                        },
+                                        onLongClick = {
+                                            if (!selectionMode) selectionMode = true
+                                            selectedPartyIds = selectedPartyIds + party.id
+                                        }
                                     )
-                                }
+                            ) {
+                                VendorCard(
+                                    vendor = party,
+                                    onPayNow = { if (!selectionMode) payingParty = party },
+                                    onAddDue = { if (!selectionMode) recordDueParty = party },
+                                    onEdit = { if (!selectionMode) editingParty = party },
+                                    onDelete = { if (!selectionMode) deletingParty = party }
+                                )
                             }
                         }
                     }
                 }
             }
         }
+
+        // Bottom-right Add button (above bottom menu bar)
+        AddFab(
+            onClick = { showAddModal = true },
+            containerColor = tabCapsuleColor(if (type == "CUSTOMER") "customers" else "vendors"),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 24.dp, bottom = 112.dp)
+        )
     }
 
     // Customer detail: use the same bottom-sheet interaction as Vendor (swipe-down to dismiss).

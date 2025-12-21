@@ -1,5 +1,8 @@
 package com.kiranaflow.app.ui.screens.home
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -20,7 +23,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
@@ -39,6 +45,7 @@ import com.kiranaflow.app.data.local.ShopSettingsStore
 import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.local.AppPrefs
 import com.kiranaflow.app.data.local.AppPrefsStore
+import com.kiranaflow.app.data.local.ReminderEntity
 import com.kiranaflow.app.data.repository.KiranaRepository
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -70,6 +77,7 @@ fun HomeScreen(
     var showDateRangePicker by remember { mutableStateOf(false) }
     var showRangeDropdown by remember { mutableStateOf(false) }
     var showAddReminder by remember { mutableStateOf(false) }
+    var reminderToConfirm by remember { mutableStateOf<ReminderEntity?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
@@ -79,7 +87,12 @@ fun HomeScreen(
     var numbersRevealed by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
-    data class ExpandedPnl(val label: String, val amount: Double, val valueColor: Color)
+    data class ExpandedPnl(
+        val label: String,
+        val amount: Double,
+        val valueColor: Color,
+        val useAbsoluteAmount: Boolean
+    )
     var expandedPnl by remember { mutableStateOf<ExpandedPnl?>(null) }
 
     @Composable
@@ -89,6 +102,7 @@ fun HomeScreen(
         icon: androidx.compose.ui.graphics.vector.ImageVector,
         valueColor: Color,
         bg: Color,
+        useAbsoluteAmount: Boolean = true,
         modifier: Modifier = Modifier
     ) {
         Card(
@@ -99,7 +113,12 @@ fun HomeScreen(
                     if (!numbersRevealed) {
                         numbersRevealed = true
                     } else {
-                        expandedPnl = ExpandedPnl(label = label, amount = amount, valueColor = valueColor)
+                        expandedPnl = ExpandedPnl(
+                            label = label,
+                            amount = amount,
+                            valueColor = valueColor,
+                            useAbsoluteAmount = useAbsoluteAmount
+                        )
                     }
                 },
             shape = RoundedCornerShape(14.dp),
@@ -123,7 +142,7 @@ fun HomeScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(4.dp))
-                    val raw = Formatters.formatInrCurrency(amount, fractionDigits = 0, useAbsolute = true)
+                    val raw = Formatters.formatInrCurrency(amount, fractionDigits = 0, useAbsolute = useAbsoluteAmount)
                     val display = if (numbersRevealed) raw else Formatters.maskDigits(raw)
                     Text(
                         text = display,
@@ -139,7 +158,7 @@ fun HomeScreen(
 
     // Full-screen expanded amount viewer (for very large values).
     expandedPnl?.let { exp ->
-        val raw = Formatters.formatInrCurrency(exp.amount, fractionDigits = 0, useAbsolute = true)
+        val raw = Formatters.formatInrCurrency(exp.amount, fractionDigits = 0, useAbsolute = exp.useAbsoluteAmount)
         Dialog(
             onDismissRequest = { expandedPnl = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -224,183 +243,99 @@ fun HomeScreen(
             .verticalScroll(scrollState)
             .padding(bottom = 100.dp) // Space for BottomNav
     ) {
-        // Header
-        Row(
+        // Blue Header Section
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 24.dp), 
+                .background(tabCapsuleColor("home"))
+                .padding(top = 48.dp, start = 20.dp, end = 16.dp, bottom = 24.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "${state.greeting},",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp,
+                            fontSize = 13.sp
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = state.ownerName.ifBlank { "Owner" },
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.Black,
+                            color = Color.White,
+                            fontSize = 26.sp
+                        )
+                    )
+                }
+                IconButton(
+                    onClick = onSettingsClick,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.2f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // =================== SECTION 1: REMINDERS ===================
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(
-                    text = "${state.greeting},",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = TextSecondary,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp,
-                        fontSize = 12.sp
-                    )
-                )
-                Text(
-                    text = state.ownerName,
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        fontWeight = FontWeight.Black,
-                        color = TextPrimary,
-                        fontSize = 24.sp
-                    )
-                )
-            }
-            SettingsIconButton(onClick = onSettingsClick)
+            Text("Reminders", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 18.sp)
+            TextButton(onClick = { showAddReminder = true }) { Text("Add", color = Blue600, fontWeight = FontWeight.Bold) }
         }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(
-            text = "Profit & Loss",
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary,
-            fontSize = 18.sp,
-            modifier = Modifier.padding(horizontal = 16.dp)
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            PnlCard(
-                label = "Revenue",
-                amount = state.revenue,
-                icon = Icons.Default.AccountBalance,
-                valueColor = Blue600,
-                bg = BgPrimary,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                text = "−",
-                color = TextSecondary,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Black
-            )
-            PnlCard(
-                label = "Expense",
-                amount = state.expense,
-                icon = Icons.Default.ArrowOutward,
-                valueColor = LossRed,
-                bg = BgPrimary,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        val isLoss = state.netProfit < 0
-        PnlCard(
-            label = if (isLoss) "Loss" else "Profit",
-            amount = state.netProfit,
-            icon = if (isLoss) Icons.Default.TrendingDown else Icons.Default.TrendingUp,
-            valueColor = if (isLoss) LossRed else ProfitGreen,
-            bg = BgPrimary,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-        )
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            colors = CardDefaults.cardColors(containerColor = BgPrimary),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-            onClick = onOpenGstReports
-        ) {
-            Row(
-                modifier = Modifier.padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = Blue600)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text("GST Reports", fontWeight = FontWeight.Black, color = TextPrimary)
-                        Text(
-                            "Export GSTR-1 (JSON + Excel)",
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                            maxLines = 1
-                        )
-                    }
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        if (state.reminders.isNotEmpty()) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                state.reminders.take(10).forEach { r ->
+                    ReminderCard(
+                        reminder = r,
+                        onCompleteClick = { reminderToConfirm = r },
+                        onDismissClick = { viewModel.dismissReminder(r.id) }
+                    )
                 }
-                Text(
-                    "Open",
-                    fontWeight = FontWeight.Bold,
-                    color = Blue600
-                )
+            }
+        } else {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = BgPrimary),
+                shape = RoundedCornerShape(14.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = ProfitGreen, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("No pending reminders", color = TextSecondary, fontWeight = FontWeight.Medium)
+                }
             }
         }
-
+        
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Reminders + Expiry alerts (C6)
-        if (state.reminders.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Reminders", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 18.sp)
-                TextButton(onClick = { showAddReminder = true }) { Text("Add", color = Blue600, fontWeight = FontWeight.Bold) }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Column(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                state.reminders.take(5).forEach { r ->
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = BgPrimary),
-                        shape = RoundedCornerShape(14.dp),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(r.title, fontWeight = FontWeight.Bold, color = TextPrimary, maxLines = 1)
-                                val due = remember(r.dueAt) {
-                                    SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(r.dueAt))
-                                }
-                                Text(due, color = TextSecondary, fontSize = 12.sp)
-                                if (!r.note.isNullOrBlank()) {
-                                    Text(r.note.orEmpty(), color = TextSecondary, fontSize = 12.sp, maxLines = 1)
-                                }
-                            }
-                            Checkbox(
-                                checked = false,
-                                onCheckedChange = { viewModel.markReminderDone(r.id) }
-                            )
-                        }
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(24.dp))
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Reminders", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 18.sp)
-                TextButton(onClick = { showAddReminder = true }) { Text("Add", color = Blue600, fontWeight = FontWeight.Bold) }
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-
+        // Expiring soon alerts
         if (state.expiringItems.isNotEmpty()) {
             Text(
                 "Expiring soon",
@@ -432,7 +367,7 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(24.dp))
         }
 
-        // Sales Trend Section
+        // =================== SECTION 2: SALES TREND CHART ===================
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -568,8 +503,64 @@ fun HomeScreen(
         }
         
         Spacer(modifier = Modifier.height(24.dp))
+
+        // =================== SECTION 3: PROFIT & LOSS ===================
+        Text(
+            text = "Profit & Loss",
+            fontWeight = FontWeight.Bold,
+            color = TextPrimary,
+            fontSize = 18.sp,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PnlCard(
+                label = "Revenue",
+                amount = state.revenue,
+                icon = Icons.Default.AccountBalance,
+                valueColor = Blue600,
+                bg = BgPrimary,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "−",
+                color = TextSecondary,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Black
+            )
+            PnlCard(
+                label = "Expense",
+                amount = state.expense,
+                icon = Icons.Default.ArrowOutward,
+                valueColor = LossRed,
+                bg = BgPrimary,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        val isLoss = state.netProfit < 0
+        PnlCard(
+            label = if (isLoss) "Loss" else "Profit",
+            amount = state.netProfit,
+            icon = if (isLoss) Icons.Default.TrendingDown else Icons.Default.TrendingUp,
+            valueColor = if (isLoss) LossRed else ProfitGreen,
+            bg = BgPrimary,
+            useAbsoluteAmount = false,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
         
-        // Recent Transactions
+        // =================== SECTION 4: RECENT TRANSACTIONS ===================
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -603,6 +594,44 @@ fun HomeScreen(
                 TransactionCard(
                     transaction = tx,
                     onClick = { onOpenTransaction(tx.id) }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // =================== SECTION 5: GST REPORTS ===================
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            colors = CardDefaults.cardColors(containerColor = BgPrimary),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            onClick = onOpenGstReports
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = Blue600)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text("GST Reports", fontWeight = FontWeight.Black, color = TextPrimary)
+                        Text(
+                            "Export GSTR-1 (JSON + Excel)",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Text(
+                    "Open",
+                    fontWeight = FontWeight.Bold,
+                    color = Blue600
                 )
             }
         }
@@ -677,5 +706,173 @@ fun HomeScreen(
             },
             dismissButton = { TextButton(onClick = { showAddReminder = false }) { Text("Cancel") } }
         )
+    }
+
+    // Confirmation dialog for completing a reminder
+    reminderToConfirm?.let { reminder ->
+        AlertDialog(
+            onDismissRequest = { reminderToConfirm = null },
+            title = { Text("Complete Task?", fontWeight = FontWeight.Bold, color = TextPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "Mark this task as completed?",
+                        color = TextSecondary,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = BgCard),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(reminder.title, fontWeight = FontWeight.Bold, color = TextPrimary)
+                            if (!reminder.note.isNullOrBlank()) {
+                                Text(reminder.note.orEmpty(), color = TextSecondary, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Completed tasks will be struck through and auto-dismiss after 24 hours.",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.markReminderDone(reminder.id)
+                        reminderToConfirm = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ProfitGreen)
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Yes, Complete", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { reminderToConfirm = null }) {
+                    Text("Cancel", color = TextSecondary, fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = BgPrimary,
+            shape = RoundedCornerShape(20.dp)
+        )
+    }
+}
+
+/**
+ * Reminder card with strike-through animation for completed tasks.
+ */
+@Composable
+private fun ReminderCard(
+    reminder: ReminderEntity,
+    onCompleteClick: () -> Unit,
+    onDismissClick: () -> Unit
+) {
+    val isCompleted = reminder.isDone
+
+    // Animated strike-through progress
+    val strikeProgress by animateFloatAsState(
+        targetValue = if (isCompleted) 1f else 0f,
+        animationSpec = tween(durationMillis = 400),
+        label = "strike"
+    )
+
+    // Animated opacity for completed tasks
+    val cardAlpha by animateFloatAsState(
+        targetValue = if (isCompleted) 0.7f else 1f,
+        animationSpec = tween(durationMillis = 300),
+        label = "alpha"
+    )
+
+    // Background color animation
+    val bgColor by animateColorAsState(
+        targetValue = if (isCompleted) ProfitGreenBg else BgPrimary,
+        animationSpec = tween(durationMillis = 300),
+        label = "bg"
+    )
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = bgColor),
+        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer { alpha = cardAlpha }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                // Title with strike-through animation
+                Text(
+                    text = reminder.title,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isCompleted) TextSecondary else TextPrimary,
+                    maxLines = 1,
+                    modifier = Modifier.drawWithContent {
+                        drawContent()
+                        if (strikeProgress > 0f) {
+                            val textWidth = size.width * strikeProgress
+                            val yCenter = size.height / 2
+                            drawLine(
+                                color = TextSecondary,
+                                start = Offset(0f, yCenter),
+                                end = Offset(textWidth, yCenter),
+                                strokeWidth = 2.dp.toPx()
+                            )
+                        }
+                    }
+                )
+                val due = remember(reminder.dueAt) {
+                    SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(reminder.dueAt))
+                }
+                Text(
+                    text = if (isCompleted) "Completed ✓" else due,
+                    color = if (isCompleted) ProfitGreen else TextSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = if (isCompleted) FontWeight.Bold else FontWeight.Normal
+                )
+                if (!reminder.note.isNullOrBlank() && !isCompleted) {
+                    Text(reminder.note.orEmpty(), color = TextSecondary, fontSize = 12.sp, maxLines = 1)
+                }
+            }
+
+            if (isCompleted) {
+                // Show dismiss button for completed reminders
+                IconButton(
+                    onClick = onDismissClick,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Dismiss",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            } else {
+                // Show complete button (circle) for pending reminders
+                IconButton(
+                    onClick = onCompleteClick,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.RadioButtonUnchecked,
+                        contentDescription = "Mark as complete",
+                        tint = Blue600,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+        }
     }
 }

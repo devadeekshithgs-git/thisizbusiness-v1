@@ -34,11 +34,26 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             // #region agent log
             com.kiranaflow.app.util.DebugLogger.log("HomeViewModel.kt:33", "Processing transactions", mapOf("count" to transactions.size), "H5")
             // #endregion
-            val revenue = transactions.filter { it.type == "INCOME" || it.type == "SALE" }.sumOf { it.amount }
-            val expense = transactions.filter { it.type == "EXPENSE" }.sumOf { it.amount }
+            // Exclude settlement payments from P&L to avoid double counting.
+            fun isSettlementPayment(tx: TransactionEntity): Boolean {
+                val looksLikePayment = tx.title.startsWith("Payment ")
+                val linkedParty = (tx.customerId != null || tx.vendorId != null)
+                return looksLikePayment && linkedParty
+            }
+
+            val revenue = transactions
+                .asSequence()
+                .filter { it.type == "SALE" || it.type == "INCOME" }
+                .filterNot { isSettlementPayment(it) }
+                .sumOf { it.amount }
+            val expense = transactions
+                .asSequence()
+                .filter { it.type == "EXPENSE" }
+                .filterNot { isSettlementPayment(it) }
+                .sumOf { it.amount }
             
             val grouped = transactions
-                .filter { it.type == "INCOME" || it.type == "SALE" }
+                .filter { it.type == "SALE" }
                 .groupBy { 
                     Instant.ofEpochMilli(it.date).atZone(ZoneId.systemDefault()).toLocalDate() 
                 }

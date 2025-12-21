@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.kiranaflow.app.data.local.ItemEntity
 import com.kiranaflow.app.data.local.ReminderEntity
 import com.kiranaflow.app.data.local.TransactionEntity
+import com.kiranaflow.app.data.local.ShopSettingsStore
 import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.ui.components.ChartDataPoint
@@ -31,14 +32,15 @@ data class DashboardState(
     val expiringItems: List<ItemEntity> = emptyList(),
     val recentTransactions: List<TransactionEntity> = emptyList(),
     val chartData: List<ChartDataPoint> = emptyList(),
-    val shopName: String = "Bhanu Super Mart",
-    val ownerName: String = "Owner Ji",
+    val shopName: String = "",
+    val ownerName: String = "",
     val greeting: String = "Good Morning",
     val selectedTimeRange: String = "7D"
 )
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = KiranaRepository(KiranaDatabase.getDatabase(application))
+    private val shopSettingsStore = ShopSettingsStore(application)
 
     private val _state = MutableStateFlow(DashboardState())
     val state: StateFlow<DashboardState> = _state.asStateFlow()
@@ -56,9 +58,22 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         // #endregion
         
         try {
+            // Subscribe to shop settings changes
+            shopSettingsStore.settings.onEach { settings ->
+                _state.value = _state.value.copy(
+                    shopName = settings.shopName.ifBlank { "My Shop" },
+                    ownerName = settings.ownerName.ifBlank { "Owner" }
+                )
+            }.launchIn(viewModelScope)
+
+            // Clean up old completed reminders on init
+            viewModelScope.launch {
+                repository.cleanupOldCompletedReminders()
+            }
+
             combine(
                 repository.allTransactions,
-                repository.activeReminders,
+                repository.getRemindersWithRecentCompleted(),
                 repository.allItems,
                 selectedRange,
                 customRangeMillis
@@ -114,20 +129,29 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 // KPIs should feel "always alive": compute them across ALL TIME.
+                // Important: exclude settlement payments from P&L, otherwise credit sales/vendor payments get double-counted.
+                fun isSettlementPayment(tx: TransactionEntity): Boolean {
+                    val looksLikePayment = tx.title.startsWith("Payment ")
+                    val linkedParty = (tx.customerId != null || tx.vendorId != null)
+                    return looksLikePayment && linkedParty
+                }
+
                 val revenue = allTx
                     .asSequence()
-                    .filter { it.type == "INCOME" || it.type == "SALE" }
+                    .filter { it.type == "SALE" || it.type == "INCOME" }
+                    .filterNot { isSettlementPayment(it) }
                     .sumOf { it.amount }
                 val expense = allTx
                     .asSequence()
                     .filter { it.type == "EXPENSE" }
+                    .filterNot { isSettlementPayment(it) }
                     .sumOf { it.amount }
 
                 val daySpan = ((bounds.second - bounds.first).coerceAtLeast(0L) / (24L * 60L * 60L * 1000L)).toInt()
                 val grouped = if (daySpan >= 62) {
                     // For longer ranges, group by month for readability/perf.
                     filtered
-                        .filter { it.type == "INCOME" || it.type == "SALE" }
+                        .filter { it.type == "SALE" }
                         .groupBy {
                             val d = Instant.ofEpochMilli(it.date).atZone(ZoneId.systemDefault()).toLocalDate()
                             d.withDayOfMonth(1)
@@ -141,7 +165,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         }
                 } else {
                     filtered
-                        .filter { it.type == "INCOME" || it.type == "SALE" }
+                        .filter { it.type == "SALE" }
                         .groupBy {
                             Instant.ofEpochMilli(it.date).atZone(ZoneId.systemDefault()).toLocalDate()
                         }
@@ -248,6 +272,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun markReminderDone(id: Int) {
         viewModelScope.launch {
             repository.markReminderDone(id)
+        }
+    }
+
+    fun dismissReminder(id: Int) {
+        viewModelScope.launch {
+            repository.dismissReminder(id)
         }
     }
 }

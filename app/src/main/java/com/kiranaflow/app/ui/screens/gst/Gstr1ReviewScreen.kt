@@ -208,7 +208,7 @@ private fun InvoiceList(
     onUpdateLineTaxableValue: (lineId: Int, taxable: Double) -> Unit
 ) {
     LazyColumn(
-        modifier = modifier,
+        modifier = modifier.imePadding(),
         contentPadding = PaddingValues(bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {

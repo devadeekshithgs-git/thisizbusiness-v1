@@ -20,8 +20,15 @@ object Formatters {
      * that indicates profit/loss via labels/colors rather than sign.
      */
     fun formatInrCurrency(value: Double, fractionDigits: Int = 0, useAbsolute: Boolean = true): String {
-        val v = if (useAbsolute) abs(value) else value
-        return "₹${formatInrNumber(v, fractionDigits)}"
+        if (useAbsolute) {
+            val v = abs(value)
+            return "₹${formatInrNumber(v, fractionDigits)}"
+        }
+
+        // Prefer "-₹1,234" over "₹-1,234"
+        val sign = if (value < 0) "-" else ""
+        val v = abs(value)
+        return "${sign}₹${formatInrNumber(v, fractionDigits)}"
     }
 
     /**

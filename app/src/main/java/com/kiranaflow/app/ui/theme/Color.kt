@@ -56,6 +56,7 @@ val White = BgPrimary
 
 // Blue/Purple for specific accents
 val Blue50 = Color(0xFFEFF6FF)
+val Blue100 = Color(0xFFDBEAFE)
 val Blue600 = Color(0xFF2563EB)
 val Purple50 = Color(0xFFFAF5FF)
 val Purple600 = Color(0xFF9333EA)
@@ -63,41 +64,3 @@ val Purple600 = Color(0xFF9333EA)
 // Additional colors from screenshots
 val KiranaGreenStack = Color(0xFFECFDF5)
 
-// ============================================
-// DARK MODE COLORS
-// ============================================
-
-// Dark Mode - Backgrounds
-val DarkBgPrimary = Color(0xFF121212)       // Main dark background
-val DarkBgCard = Color(0xFF1E1E1E)          // Card/Surface dark
-val DarkBgElevated = Color(0xFF2D2D2D)      // Elevated surfaces
-
-// Dark Mode - Text Colors
-val DarkTextPrimary = Color(0xFFE1E1E1)     // Primary text on dark
-val DarkTextSecondary = Color(0xFFA0A0A0)   // Secondary text on dark
-
-// Dark Mode - Profit/Success (slightly brighter for visibility)
-val DarkProfitGreen = Color(0xFF4CAF50)     // Brighter green for dark mode
-val DarkProfitGreenBg = Color(0xFF1B3D1B)   // Dark green background
-
-// Dark Mode - Loss/Error (slightly brighter for visibility)
-val DarkLossRed = Color(0xFFEF5350)         // Brighter red for dark mode
-val DarkLossRedBg = Color(0xFF3D1B1B)       // Dark red background
-
-// Dark Mode - Interactive/Accent
-val DarkInteractiveCyan = Color(0xFF26C6DA) // Brighter cyan for dark
-val DarkBlue600 = Color(0xFF42A5F5)         // Brighter blue for dark
-val DarkPurple600 = Color(0xFFAB47BC)       // Brighter purple for dark
-val DarkAlertOrange = Color(0xFFFF7043)     // Brighter orange for dark
-
-// Dark Mode - Gray scale
-val DarkGray50 = Color(0xFF2D2D2D)
-val DarkGray100 = Color(0xFF3D3D3D)
-val DarkGray200 = Color(0xFF4D4D4D)
-val DarkGray300 = Color(0xFF5D5D5D)
-val DarkGray400 = Color(0xFF757575)
-val DarkGray500 = Color(0xFF9E9E9E)
-
-// Dark Mode - Chart Colors
-val DarkChartUp = Color(0xFF26A69A)         // Teal for uptrend
-val DarkChartDown = Color(0xFFEF5350)       // Red for downtrend

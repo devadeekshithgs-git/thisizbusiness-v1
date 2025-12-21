@@ -106,7 +106,8 @@ data class ReminderEntity(
     val refId: Int?, // itemId/vendorId where relevant
     val dueAt: Long,
     val note: String? = null,
-    val isDone: Boolean = false
+    val isDone: Boolean = false,
+    val completedAtMillis: Long? = null // When the reminder was marked done (for 24hr auto-dismiss)
 )
 
 /**

@@ -72,16 +72,8 @@ fun KiranaBottomNav(
         else -> 0
     }
 
-    // Solid capsule colors for each tab
-    fun capsuleColorForTab(tab: String): Color = when (tab) {
-        "home" -> Color(0xFF301CA0)      // Deep purple-blue
-        "customers" -> Color(0xFF043915) // Dark green
-        "bill" -> Color(0xFF212121)      // Near black
-        "inventory" -> Color(0xFFE67514) // Orange
-        "vendors" -> Color(0xFFBF124D)   // Magenta/red
-        else -> Color(0xFF212121)
-    }
-    val selectedCapsuleColor = capsuleColorForTab(items[selectedIndex].id)
+    // Single source of truth (shared with headers / tab actions).
+    val selectedCapsuleColor = tabCapsuleColor(items[selectedIndex].id)
 
     // Outer container stays full width, but the nav bar itself is a floating capsule with smaller width.
     Box(

@@ -180,14 +180,36 @@ interface ReminderDao {
     @Query("SELECT * FROM reminders WHERE isDone = 0 ORDER BY dueAt ASC")
     fun getActiveReminders(): Flow<List<ReminderEntity>>
 
+    /**
+     * Get all reminders that are either:
+     * - Not done (isDone = 0), or
+     * - Done within the last 24 hours (for strike-through display)
+     */
+    @Query("""
+        SELECT * FROM reminders 
+        WHERE isDone = 0 
+           OR (isDone = 1 AND completedAtMillis IS NOT NULL AND completedAtMillis > :cutoffMillis)
+        ORDER BY isDone ASC, dueAt ASC
+    """)
+    fun getRemindersWithRecentCompleted(cutoffMillis: Long): Flow<List<ReminderEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReminder(reminder: ReminderEntity)
 
     @Query("UPDATE reminders SET isDone = 1 WHERE id = :id")
     suspend fun markDone(id: Int)
 
+    @Query("UPDATE reminders SET isDone = 1, completedAtMillis = :completedAtMillis WHERE id = :id")
+    suspend fun markDoneWithTimestamp(id: Int, completedAtMillis: Long)
+
     @Query("DELETE FROM reminders WHERE id = :id")
     suspend fun deleteReminder(id: Int)
+
+    /**
+     * Clean up old completed reminders (older than 24 hours)
+     */
+    @Query("DELETE FROM reminders WHERE isDone = 1 AND completedAtMillis IS NOT NULL AND completedAtMillis < :cutoffMillis")
+    suspend fun deleteOldCompletedReminders(cutoffMillis: Long)
 }
 
 @Dao

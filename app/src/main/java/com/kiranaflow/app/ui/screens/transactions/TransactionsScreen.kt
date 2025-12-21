@@ -90,251 +90,257 @@ fun TransactionsScreen(
             colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = BgPrimary)
         )
 
-        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            OutlinedTextField(
-                value = state.query,
-                onValueChange = viewModel::setQuery,
-                modifier = Modifier.fillMaxWidth(),
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                placeholder = { Text("Search by customer/vendor, product, title...") },
-                singleLine = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = White,
-                    unfocusedContainerColor = White,
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary
-                )
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                "${state.results.size} result${if (state.results.size == 1) "" else "s"}",
-                color = TextSecondary,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium
-            )
-            if (state.unsyncedTxIds.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "Sync pending: ${state.unsyncedTxIds.size}",
-                    color = AlertOrange,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+        // Use single LazyColumn for entire content to support landscape scrolling
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 100.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Search field as first item
+            item {
+                OutlinedTextField(
+                    value = state.query,
+                    onValueChange = viewModel::setQuery,
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    placeholder = { Text("Search by customer/vendor, product, title...") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = White,
+                        unfocusedContainerColor = White,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Filter strip
-            Card(
-                colors = CardDefaults.cardColors(containerColor = BgPrimary),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { filtersExpanded = !filtersExpanded },
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("FILTERS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                if (filtersExpanded) "Hide" else "Show",
-                                color = Blue600,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = if (filtersExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = Blue600
-                            )
-                        }
-                    }
-
-                    AnimatedVisibility(visible = filtersExpanded) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    val chipRow = rememberScrollState()
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(chipRow),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        FilterChip(
-                            selected = state.partyType == "ALL",
-                            onClick = { viewModel.setPartyType("ALL") },
-                            label = { Text("All") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.partyType == "CUSTOMER",
-                            onClick = { viewModel.setPartyType("CUSTOMER") },
-                            label = { Text("Customers") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.partyType == "VENDOR",
-                            onClick = { viewModel.setPartyType("VENDOR") },
-                            label = { Text("Vendors") },
-                            colors = chipColors
-                        )
-                    }
-
-                    val chipRow2 = rememberScrollState()
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(chipRow2),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        FilterChip(
-                            selected = state.paymentMode == "ALL",
-                            onClick = { viewModel.setPaymentMode("ALL") },
-                            label = { Text("Any") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.paymentMode == "CASH",
-                            onClick = { viewModel.setPaymentMode("CASH") },
-                            label = { Text("Cash") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.paymentMode == "UPI",
-                            onClick = { viewModel.setPaymentMode("UPI") },
-                            label = { Text("UPI") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.paymentMode == "CREDIT",
-                            onClick = { viewModel.setPaymentMode("CREDIT") },
-                            label = { Text("Udhaar") },
-                            colors = chipColors
-                        )
-                    }
-
-                    // Quick date range chips (in addition to Custom picker)
-                    val dayMs = 24L * 60L * 60L * 1000L
-                    val now = System.currentTimeMillis()
-                    val startToday = remember {
-                        val zone = ZoneId.systemDefault()
-                        LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
-                    }
-                    val dateChipRow = rememberScrollState()
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(dateChipRow),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        FilterChip(
-                            selected = state.dateRange?.first == startToday,
-                            onClick = { viewModel.setDateRange(startToday to now) },
-                            label = { Text("Today") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.dateRange?.first == (now - 7L * dayMs),
-                            onClick = { viewModel.setDateRange((now - 7L * dayMs) to now) },
-                            label = { Text("7D") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.dateRange?.first == (now - 30L * dayMs),
-                            onClick = { viewModel.setDateRange((now - 30L * dayMs) to now) },
-                            label = { Text("1M") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.dateRange?.first == (now - 90L * dayMs),
-                            onClick = { viewModel.setDateRange((now - 90L * dayMs) to now) },
-                            label = { Text("3M") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.dateRange?.first == (now - 180L * dayMs),
-                            onClick = { viewModel.setDateRange((now - 180L * dayMs) to now) },
-                            label = { Text("6M") },
-                            colors = chipColors
-                        )
-                        FilterChip(
-                            selected = state.dateRange?.first == (now - 365L * dayMs),
-                            onClick = { viewModel.setDateRange((now - 365L * dayMs) to now) },
-                            label = { Text("1Y") },
-                            colors = chipColors
-                        )
-                        AssistChip(
-                            onClick = { showDatePicker = true },
-                            label = { Text("Custom") },
-                            leadingIcon = { Icon(Icons.Default.DateRange, contentDescription = null) }
-                        )
-                    }
-
-                    OutlinedTextField(
-                        value = state.productQuery,
-                        onValueChange = viewModel::setProductQuery,
-                        modifier = Modifier.fillMaxWidth(),
-                        leadingIcon = { Icon(Icons.Default.Inventory2, contentDescription = null) },
-                        placeholder = { Text("Filter by product bought") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = White,
-                            unfocusedContainerColor = White,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
+            // Results count and sync status
+            item {
+                Column {
+                    Text(
+                        "${state.results.size} result${if (state.results.size == 1) "" else "s"}",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
                     )
+                    if (state.unsyncedTxIds.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Sync pending: ${state.unsyncedTxIds.size}",
+                            color = AlertOrange,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val df = remember { SimpleDateFormat("dd MMM yy", Locale.getDefault()) }
-                        val dateLabel = if (state.dateRange == null) {
-                            "Any date"
-                        } else {
-                            val (s, e) = state.dateRange!!
-                            "${df.format(Date(minOf(s, e)))} → ${df.format(Date(maxOf(s, e)))}"
-                        }
-                        Text(dateLabel, color = if (state.dateRange == null) TextSecondary else TextPrimary, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { showDatePicker = true }) { Text("Pick") }
-                            if (state.dateRange != null) {
-                                TextButton(onClick = viewModel::clearDateRange) { Text("Clear") }
+            // Filter strip as an item
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = BgPrimary),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { filtersExpanded = !filtersExpanded },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("FILTERS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    if (filtersExpanded) "Hide" else "Show",
+                                    color = Blue600,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    imageVector = if (filtersExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = Blue600
+                                )
                             }
                         }
-                    }
 
-                    if (state.query.isNotBlank() || state.productQuery.isNotBlank() || state.partyType != "ALL" || state.paymentMode != "ALL" || state.dateRange != null) {
-                        TextButton(
-                            onClick = {
-                                viewModel.setQuery("")
-                                viewModel.setProductQuery("")
-                                viewModel.setPartyType("ALL")
-                                viewModel.setPaymentMode("ALL")
-                                viewModel.clearDateRange()
-                            },
-                            contentPadding = PaddingValues(0.dp)
-                        ) { Text("Clear all filters", color = Blue600, fontWeight = FontWeight.Bold) }
-                    }
+                        AnimatedVisibility(visible = filtersExpanded) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                val chipRow = rememberScrollState()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(chipRow),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = state.partyType == "ALL",
+                                        onClick = { viewModel.setPartyType("ALL") },
+                                        label = { Text("All") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.partyType == "CUSTOMER",
+                                        onClick = { viewModel.setPartyType("CUSTOMER") },
+                                        label = { Text("Customers") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.partyType == "VENDOR",
+                                        onClick = { viewModel.setPartyType("VENDOR") },
+                                        label = { Text("Vendors") },
+                                        colors = chipColors
+                                    )
+                                }
+
+                                val chipRow2 = rememberScrollState()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(chipRow2),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = state.paymentMode == "ALL",
+                                        onClick = { viewModel.setPaymentMode("ALL") },
+                                        label = { Text("Any") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.paymentMode == "CASH",
+                                        onClick = { viewModel.setPaymentMode("CASH") },
+                                        label = { Text("Cash") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.paymentMode == "UPI",
+                                        onClick = { viewModel.setPaymentMode("UPI") },
+                                        label = { Text("UPI") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.paymentMode == "CREDIT",
+                                        onClick = { viewModel.setPaymentMode("CREDIT") },
+                                        label = { Text("Udhaar") },
+                                        colors = chipColors
+                                    )
+                                }
+
+                                // Quick date range chips (in addition to Custom picker)
+                                val dayMs = 24L * 60L * 60L * 1000L
+                                val now = System.currentTimeMillis()
+                                val startToday = remember {
+                                    val zone = ZoneId.systemDefault()
+                                    LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
+                                }
+                                val dateChipRow = rememberScrollState()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(dateChipRow),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = state.dateRange?.first == startToday,
+                                        onClick = { viewModel.setDateRange(startToday to now) },
+                                        label = { Text("Today") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.dateRange?.first == (now - 7L * dayMs),
+                                        onClick = { viewModel.setDateRange((now - 7L * dayMs) to now) },
+                                        label = { Text("7D") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.dateRange?.first == (now - 30L * dayMs),
+                                        onClick = { viewModel.setDateRange((now - 30L * dayMs) to now) },
+                                        label = { Text("1M") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.dateRange?.first == (now - 90L * dayMs),
+                                        onClick = { viewModel.setDateRange((now - 90L * dayMs) to now) },
+                                        label = { Text("3M") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.dateRange?.first == (now - 180L * dayMs),
+                                        onClick = { viewModel.setDateRange((now - 180L * dayMs) to now) },
+                                        label = { Text("6M") },
+                                        colors = chipColors
+                                    )
+                                    FilterChip(
+                                        selected = state.dateRange?.first == (now - 365L * dayMs),
+                                        onClick = { viewModel.setDateRange((now - 365L * dayMs) to now) },
+                                        label = { Text("1Y") },
+                                        colors = chipColors
+                                    )
+                                    AssistChip(
+                                        onClick = { showDatePicker = true },
+                                        label = { Text("Custom") },
+                                        leadingIcon = { Icon(Icons.Default.DateRange, contentDescription = null) }
+                                    )
+                                }
+
+                                OutlinedTextField(
+                                    value = state.productQuery,
+                                    onValueChange = viewModel::setProductQuery,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    leadingIcon = { Icon(Icons.Default.Inventory2, contentDescription = null) },
+                                    placeholder = { Text("Filter by product bought") },
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = White,
+                                        unfocusedContainerColor = White,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
+                                    )
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val df = remember { SimpleDateFormat("dd MMM yy", Locale.getDefault()) }
+                                    val dateLabel = if (state.dateRange == null) {
+                                        "Any date"
+                                    } else {
+                                        val (s, e) = state.dateRange!!
+                                        "${df.format(Date(minOf(s, e)))} → ${df.format(Date(maxOf(s, e)))}"
+                                    }
+                                    Text(dateLabel, color = if (state.dateRange == null) TextSecondary else TextPrimary, fontWeight = FontWeight.Bold)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        TextButton(onClick = { showDatePicker = true }) { Text("Pick") }
+                                        if (state.dateRange != null) {
+                                            TextButton(onClick = viewModel::clearDateRange) { Text("Clear") }
+                                        }
+                                    }
+                                }
+
+                                if (state.query.isNotBlank() || state.productQuery.isNotBlank() || state.partyType != "ALL" || state.paymentMode != "ALL" || state.dateRange != null) {
+                                    TextButton(
+                                        onClick = {
+                                            viewModel.setQuery("")
+                                            viewModel.setProductQuery("")
+                                            viewModel.setPartyType("ALL")
+                                            viewModel.setPaymentMode("ALL")
+                                            viewModel.clearDateRange()
+                                        },
+                                        contentPadding = PaddingValues(0.dp)
+                                    ) { Text("Clear all filters", color = Blue600, fontWeight = FontWeight.Bold) }
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        Spacer(modifier = Modifier.height(4.dp))
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 100.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+            // Transaction results - empty state or list
             if (state.results.isEmpty()) {
                 item {
                     Column(
@@ -350,26 +356,27 @@ fun TransactionsScreen(
                         Text("Try clearing filters or changing your search.", color = TextSecondary, fontSize = 12.sp)
                     }
                 }
-            }
-            items(state.results, key = { it.tx.id }) { row ->
-                val isSelected = selectedIds.contains(row.tx.id)
-                TransactionExplorerCard(
-                    row = row,
-                    selectionMode = selectionMode,
-                    isSelected = isSelected,
-                    isUnsynced = state.unsyncedTxIds.contains(row.tx.id),
-                    onClick = {
-                        if (selectionMode) {
-                            selectedIds = if (isSelected) selectedIds - row.tx.id else selectedIds + row.tx.id
-                        } else {
-                            onOpenTransaction(row.tx.id)
+            } else {
+                items(state.results, key = { it.tx.id }) { row ->
+                    val isSelected = selectedIds.contains(row.tx.id)
+                    TransactionExplorerCard(
+                        row = row,
+                        selectionMode = selectionMode,
+                        isSelected = isSelected,
+                        isUnsynced = state.unsyncedTxIds.contains(row.tx.id),
+                        onClick = {
+                            if (selectionMode) {
+                                selectedIds = if (isSelected) selectedIds - row.tx.id else selectedIds + row.tx.id
+                            } else {
+                                onOpenTransaction(row.tx.id)
+                            }
+                        },
+                        onLongPress = {
+                            if (!selectionMode) selectionMode = true
+                            selectedIds = selectedIds + row.tx.id
                         }
-                    },
-                    onLongPress = {
-                        if (!selectionMode) selectionMode = true
-                        selectedIds = selectedIds + row.tx.id
-                    }
-                )
+                    )
+                }
             }
         }
     }

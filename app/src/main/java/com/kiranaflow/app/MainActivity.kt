@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,9 +35,7 @@ import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.local.AppPrefsStore
 import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.ui.components.KiranaBottomNav
-import com.kiranaflow.app.ui.components.OfflineBanner
 import com.kiranaflow.app.ui.components.SettingsDrawer
-import com.kiranaflow.app.ui.components.SyncStatusChip
 import com.kiranaflow.app.ui.screens.billing.BillingScreen
 import com.kiranaflow.app.ui.screens.billing.BillingViewModel
 import com.kiranaflow.app.ui.screens.home.HomeScreen
@@ -61,17 +61,12 @@ import com.kiranaflow.app.ui.screens.vendors.VendorsScreen // Imported correctly
 import com.kiranaflow.app.ui.theme.KiranaTheme
 import com.kiranaflow.app.util.DebugLogger
 import com.kiranaflow.app.util.ConnectivityMonitor
+import com.kiranaflow.app.util.ImmediateSyncManager
 import com.kiranaflow.app.util.StubSyncEngine
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -83,6 +78,9 @@ class MainActivity : ComponentActivity() {
         // #region agent log
         DebugLogger.log("MainActivity.kt:37", "onCreate started", mapOf(), "H1")
         // #endregion
+        
+        // Initialize immediate sync manager for always-online data sync
+        ImmediateSyncManager.init(this)
         
         try {
             lifecycleScope.launch {
@@ -134,7 +132,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = this
             val appPrefsStore = remember { AppPrefsStore(context) }
-            val appPrefs by appPrefsStore.prefs.collectAsState(initial = com.kiranaflow.app.data.local.AppPrefs())
 
             // Privacy overlay: re-lock (mask numbers) when app goes to background.
             val lifecycleOwner = LocalLifecycleOwner.current
@@ -149,7 +146,7 @@ class MainActivity : ComponentActivity() {
                 onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
             }
             
-            KiranaTheme(darkTheme = appPrefs.darkModeEnabled) { 
+            KiranaTheme {
                 KiranaApp()
             }
         }
@@ -208,54 +205,16 @@ fun KiranaApp() {
     val db = remember(ctx) { KiranaDatabase.getDatabase(ctx) }
     val repo = remember(ctx) { KiranaRepository(db) }
     val appPrefsStore = remember(ctx) { AppPrefsStore(ctx) }
-    val syncEngine = remember(ctx) { StubSyncEngine(db, appPrefsStore) }
-    val reconnectMutex = remember { Mutex() }
-    val reconnectScope = rememberCoroutineScope()
-
-    fun requestNetworkBestEffort() {
-        runCatching {
-            val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return@runCatching
-            val req = NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
-            // Best-effort: prompts Android to validate/bring up a network if possible.
-            val cb = object : ConnectivityManager.NetworkCallback() {}
-            cm.requestNetwork(req, cb)
-            reconnectScope.launch {
-                delay(3_000)
-                runCatching { cm.unregisterNetworkCallback(cb) }
-            }
-        }
-    }
-
-    fun startReconnectAndSyncRetry() {
-        reconnectScope.launch {
-            // Prevent stacking multiple retries if user taps repeatedly.
-            reconnectMutex.withLock {
-                var delayMs = 600L
-                while (true) {
-                    val isOnlineNow = runCatching { monitor.isOnline.first() }.getOrDefault(false)
-                    if (!isOnlineNow) {
-                        requestNetworkBestEffort()
-                    }
-
-                    val result = runCatching { syncEngine.syncOnce() }.getOrNull()
-                    val pending = runCatching { repo.pendingOutboxCount.first() }.getOrDefault(0)
-
-                    // Exit only when device is online and data sync is restored (no pending outbox ops).
-                    if (isOnlineNow && pending <= 0) break
-
-                    // Backoff. If sync can't run due to configuration, still retry but less aggressively.
-                    val msg = result?.message.orEmpty()
-                    val maxDelay = if (
-                        msg.contains("Backend URL not configured", ignoreCase = true) ||
-                        msg.contains("Cloud Sync is off", ignoreCase = true)
-                    ) 60_000L else 15_000L
-
-                    delay(delayMs.coerceAtMost(maxDelay))
-                    delayMs = (delayMs * 2).coerceAtMost(maxDelay)
-                }
-            }
+    val syncEngine = remember(ctx) { StubSyncEngine(db, appPrefsStore, ctx) }
+    
+    // Auto-sync when connectivity is restored
+    val isOnline by monitor.isOnline.collectAsState(initial = true)
+    val pendingCount by repo.pendingOutboxCount.collectAsState(initial = 0)
+    
+    LaunchedEffect(isOnline, pendingCount) {
+        // When we come online and have pending items, sync immediately
+        if (isOnline && pendingCount > 0) {
+            runCatching { syncEngine.syncAllPending() }
         }
     }
 
@@ -511,21 +470,6 @@ fun KiranaApp() {
             }
 
             SettingsDrawer(isOpen = showSettingsDrawer, onClose = { showSettingsDrawer = false })
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .wrapContentSize(Alignment.TopCenter)
-                    .padding(top = 12.dp)
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OfflineBanner(
-                        isOnlineFlow = monitor.isOnline,
-                        onReconnect = { startReconnectAndSyncRetry() }
-                    )
-                    SyncStatusChip(isOnlineFlow = monitor.isOnline, pendingCountFlow = repo.pendingOutboxCount)
-                }
-            }
         }
     }
 }

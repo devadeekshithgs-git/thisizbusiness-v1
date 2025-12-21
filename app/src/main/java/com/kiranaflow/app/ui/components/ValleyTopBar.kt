@@ -29,61 +29,90 @@ fun ValleyTopBar(
     onAction: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    containerColor: Color = BgPrimary,
     actionColor: Color = BgPrimary,
-    actionIconTint: Color = TextPrimary,
+    actionIconTint: Color = contentColorForBackground(actionColor),
+    backgroundColor: Color = GrayBg,
 ) {
-    Box(modifier = modifier.fillMaxWidth()) {
-        // Main bar
-        Surface(
-            color = BgPrimary,
-            shape = RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(132.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 18.dp, start = 16.dp, end = 16.dp),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.SpaceBetween
+    val headerContentColor = contentColorForBackground(containerColor)
+    val headerSubtitleColor = headerContentColor.copy(alpha = 0.85f)
+    val settingsBg =
+        if (headerContentColor == Color.White) Color.White.copy(alpha = 0.18f) else Color.Black.copy(alpha = 0.06f)
+    val settingsBorder = headerContentColor.copy(alpha = 0.22f)
+
+    /**
+     * Important: the "valley" and FAB overlap below the main bar.
+     * Using `offset()` alone does NOT increase the layout's measured height, which causes
+     * scrollable content below to render/scroll under the header and feel "stuck".
+     *
+     * We explicitly reserve extra height (26.dp) so content starts below the overlapped area.
+     */
+    Column(modifier = modifier.fillMaxWidth()) {
+        // Main bar (fixed height)
+        Box(modifier = Modifier.fillMaxWidth().height(132.dp)) {
+            Surface(
+                color = containerColor,
+                shape = RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp),
+                modifier = Modifier.fillMaxSize()
             ) {
-                // Left spacer to keep title centered relative to settings icon
-                Box(modifier = Modifier.size(44.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = 18.dp, start = 16.dp, end = 16.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Left spacer to keep title centered relative to settings icon
+                    Box(modifier = Modifier.size(44.dp))
 
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(title, fontWeight = FontWeight.Black, fontSize = 18.sp, color = TextPrimary)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(subtitle, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = TextSecondary)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(title, fontWeight = FontWeight.Black, fontSize = 18.sp, color = headerContentColor)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(subtitle, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = headerSubtitleColor)
+                    }
+
+                    SettingsIconButton(
+                        onClick = onSettings,
+                        containerColor = settingsBg,
+                        contentColor = headerContentColor,
+                        borderColor = settingsBorder
+                    )
                 }
-
-                SettingsIconButton(onClick = onSettings)
             }
         }
 
-        // Valley cutout (matches background behind)
+        // Reserve the protruding space below the bar (so lists start below it)
         Box(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .offset(y = 26.dp)
-                .size(92.dp)
-                .background(GrayBg, CircleShape)
-        )
-
-        // Floating action button inside the valley
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .offset(y = 10.dp)
-                .size(64.dp)
-                .shadow(14.dp, CircleShape, spotColor = actionColor.copy(alpha = 0.35f))
-                .clip(CircleShape)
-                .background(actionColor)
-                .border(1.dp, Gray200, CircleShape)
-                .clickable { onAction() },
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .height(26.dp)
         ) {
-            Icon(actionIcon, contentDescription = null, tint = actionIconTint, modifier = Modifier.size(28.dp))
+            // Valley cutout (matches background behind)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    // 92dp circle with 26dp below the bar => overlap 66dp upward into the bar.
+                    .offset(y = (-66).dp)
+                    .size(92.dp)
+                    .background(backgroundColor, CircleShape)
+            )
+
+            // Floating action button inside the valley
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    // 64dp fab with 10dp below the bar => overlap 54dp upward into the bar.
+                    .offset(y = (-54).dp)
+                    .size(64.dp)
+                    .shadow(14.dp, CircleShape, spotColor = actionColor.copy(alpha = 0.35f))
+                    .clip(CircleShape)
+                    .background(actionColor)
+                    .border(1.dp, Gray200, CircleShape)
+                    .clickable { onAction() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(actionIcon, contentDescription = null, tint = actionIconTint, modifier = Modifier.size(28.dp))
+            }
         }
     }
 }

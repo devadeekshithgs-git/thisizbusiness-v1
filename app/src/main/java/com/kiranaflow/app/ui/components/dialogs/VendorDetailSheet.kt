@@ -50,170 +50,166 @@ fun VendorDetailSheet(
         containerColor = BgPrimary,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
     ) {
-        Column(
+        // Use single LazyColumn for entire content to support landscape scrolling
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight()
-                .padding(24.dp)
                 .navigationBarsPadding()
-                .imePadding()
-                .padding(bottom = 16.dp)
+                .imePadding(),
+            contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        vendor.name,
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
-                        ),
-                        color = TextPrimary
-                    )
-                    Text(
-                        vendor.phone,
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontSize = 14.sp,
-                            color = TextSecondary
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            vendor.name,
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 20.sp
+                            ),
+                            color = TextPrimary
                         )
-                    )
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = TextSecondary)
+                        Text(
+                            vendor.phone,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontSize = 14.sp,
+                                color = TextSecondary
+                            )
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextSecondary)
+                    }
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
 
             // Current Balance Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = BgCard)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    val dueAmount = -vendor.balance
-                    Text(
-                        "CURRENT BALANCE",
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = TextSecondary
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = BgCard)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        val dueAmount = -vendor.balance
+                        Text(
+                            "CURRENT BALANCE",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = TextSecondary
+                            )
                         )
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        if (dueAmount > 0) "You owe ₹${dueAmount.toInt()}" else "No dues",
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 24.sp,
-                            color = if (dueAmount > 0) LossRed else TextPrimary
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (dueAmount > 0) "You owe ₹${dueAmount.toInt()}" else "No dues",
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 24.sp,
+                                color = if (dueAmount > 0) LossRed else TextPrimary
+                            )
                         )
-                    )
+                    }
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
 
             // Record Payment Section
-            Text(
-                "RECORD PAYMENT",
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = TextSecondary
+            item {
+                Text(
+                    "RECORD PAYMENT",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = TextSecondary
+                    )
                 )
-            )
-            Spacer(modifier = Modifier.height(12.dp))
+            }
             
             // Amount Input
-            KiranaInput(
-                value = amountText,
-                onValueChange = { amountText = InputFilters.decimal(it) },
-                placeholder = "₹ Amount",
-                label = "AMOUNT",
-                keyboardType = KeyboardType.Decimal
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
+            item {
+                KiranaInput(
+                    value = amountText,
+                    onValueChange = { amountText = InputFilters.decimal(it) },
+                    placeholder = "₹ Amount",
+                    label = "AMOUNT",
+                    keyboardType = KeyboardType.Decimal
+                )
+            }
 
             // Payment Method Selection
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { selectedPaymentMethod = "CASH" },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (selectedPaymentMethod == "CASH") ProfitGreen else BgCard
-                    )
-                ) {
-                    Text("Cash", color = if (selectedPaymentMethod == "CASH") BgPrimary else TextPrimary)
-                }
-                Button(
-                    onClick = { selectedPaymentMethod = "UPI" },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (selectedPaymentMethod == "UPI") ProfitGreen else BgCard
-                    )
-                ) {
-                    Text("UPI", color = if (selectedPaymentMethod == "UPI") BgPrimary else TextPrimary)
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { selectedPaymentMethod = "CASH" },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (selectedPaymentMethod == "CASH") ProfitGreen else BgCard
+                        )
+                    ) {
+                        Text("Cash", color = if (selectedPaymentMethod == "CASH") BgPrimary else TextPrimary)
+                    }
+                    Button(
+                        onClick = { selectedPaymentMethod = "UPI" },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (selectedPaymentMethod == "UPI") ProfitGreen else BgCard
+                        )
+                    ) {
+                        Text("UPI", color = if (selectedPaymentMethod == "UPI") BgPrimary else TextPrimary)
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
             // Save Transaction Button
-            KiranaButton(
-                text = if (saving) "Saved" else "Save Transaction",
-                onClick = {
-                    if (saving) return@KiranaButton
-                    val amount = amountText.toDoubleOrNull() ?: 0.0
-                    if (amount > 0) {
-                        saving = true
-                        onSavePayment(amount, selectedPaymentMethod)
-                        amountText = ""
-                        runCatching {
-                            Toast.makeText(context, "Payment recorded", Toast.LENGTH_SHORT).show()
+            item {
+                KiranaButton(
+                    text = if (saving) "Saved" else "Save Transaction",
+                    onClick = {
+                        if (saving) return@KiranaButton
+                        val amount = amountText.toDoubleOrNull() ?: 0.0
+                        if (amount > 0) {
+                            saving = true
+                            onSavePayment(amount, selectedPaymentMethod)
+                            amountText = ""
+                            runCatching {
+                                Toast.makeText(context, "Payment recorded", Toast.LENGTH_SHORT).show()
+                            }
+                            scope.launch {
+                                delay(800)
+                                saving = false
+                            }
                         }
-                        scope.launch {
-                            delay(800)
-                            saving = false
-                        }
-                    }
-                },
-                enabled = !saving,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Blue600,
-                    contentColor = BgPrimary
+                    },
+                    enabled = !saving,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Blue600,
+                        contentColor = BgPrimary
+                    )
                 )
-            )
+            }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Transaction History
-            Text(
-                "TRANSACTION HISTORY",
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = TextSecondary
+            // Transaction History Header
+            item {
+                Text(
+                    "TRANSACTION HISTORY",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = TextSecondary
+                    )
                 )
-            )
-            Spacer(modifier = Modifier.height(12.dp))
+            }
 
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                items(transactions) { transaction ->
-                    TransactionCard(transaction = transaction)
-                }
+            // Transaction items
+            items(transactions) { transaction ->
+                TransactionCard(transaction = transaction)
             }
         }
     }

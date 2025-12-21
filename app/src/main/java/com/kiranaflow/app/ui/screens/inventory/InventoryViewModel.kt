@@ -140,4 +140,54 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
             repository.deleteItemsByIds(ids.toList())
         }
     }
+
+    /**
+     * Quick stock adjustment - adds or subtracts from current stock.
+     * For loose items, adjusts stockKg; for regular items, adjusts stock.
+     */
+    fun adjustStock(item: ItemEntity, delta: Int) {
+        viewModelScope.launch {
+            val updated = if (item.isLoose) {
+                val newStockKg = (item.stockKg + delta).coerceAtLeast(0.0)
+                item.copy(stockKg = newStockKg)
+            } else {
+                val newStock = (item.stock + delta).coerceAtLeast(0)
+                item.copy(stock = newStock)
+            }
+            repository.updateItem(updated)
+        }
+    }
+
+    /**
+     * Quick stock adjustment for loose items with decimal values.
+     */
+    fun adjustStockKg(item: ItemEntity, deltaKg: Double) {
+        if (!item.isLoose) return
+        viewModelScope.launch {
+            val newStockKg = (item.stockKg + deltaKg).coerceAtLeast(0.0)
+            repository.updateItem(item.copy(stockKg = newStockKg))
+        }
+    }
+
+    /**
+     * Set stock to an absolute value (for quick entry).
+     */
+    fun setStock(item: ItemEntity, newStock: Int) {
+        viewModelScope.launch {
+            val updated = if (item.isLoose) {
+                item.copy(stockKg = newStock.toDouble().coerceAtLeast(0.0))
+            } else {
+                item.copy(stock = newStock.coerceAtLeast(0))
+            }
+            repository.updateItem(updated)
+        }
+    }
+
+    /**
+     * Add received stock (positive delta only) - for when new shipment arrives.
+     */
+    fun addReceivedStock(item: ItemEntity, quantity: Int) {
+        if (quantity <= 0) return
+        adjustStock(item, quantity)
+    }
 }

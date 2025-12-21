@@ -7,35 +7,37 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import com.kiranaflow.app.ui.theme.*
+import com.kiranaflow.app.ui.theme.Gray200
+import com.kiranaflow.app.ui.theme.White
 
 @Composable
-fun SettingsIconButton(
+fun AddFab(
     onClick: () -> Unit,
-    containerColor: androidx.compose.ui.graphics.Color = BgPrimary,
-    contentColor: androidx.compose.ui.graphics.Color = TextPrimary,
-    borderColor: androidx.compose.ui.graphics.Color = Gray200,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    containerColor: Color,
+    contentColor: Color = White,
 ) {
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(56.dp)
+            .shadow(14.dp, CircleShape, spotColor = containerColor.copy(alpha = 0.35f))
             .clip(CircleShape)
             .background(containerColor)
-            .border(1.dp, borderColor, CircleShape)
-            .clickable { onClick() },
+            .border(1.dp, Gray200, CircleShape)
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = contentColor)
+        Icon(Icons.Default.Add, contentDescription = null, tint = contentColor, modifier = Modifier.size(26.dp))
     }
 }
-
 
 

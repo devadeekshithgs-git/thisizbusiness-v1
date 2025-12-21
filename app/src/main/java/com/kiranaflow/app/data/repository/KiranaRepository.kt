@@ -21,6 +21,7 @@ import com.kiranaflow.app.sync.SyncEntityType
 import com.kiranaflow.app.sync.SyncOpType
 import kotlinx.coroutines.flow.map
 import com.kiranaflow.app.util.BillOcrParser
+import com.kiranaflow.app.util.ImmediateSyncManager
 
 class KiranaRepository(private val db: KiranaDatabase) {
     private val itemDao = db.itemDao()
@@ -34,6 +35,12 @@ class KiranaRepository(private val db: KiranaDatabase) {
     val allTransactions: Flow<List<TransactionEntity>> = transactionDao.getAllTransactions()
     val allTransactionItems: Flow<List<TransactionItemEntity>> = transactionDao.getAllTransactionItems()
     val activeReminders: Flow<List<ReminderEntity>> = reminderDao.getActiveReminders()
+    
+    // Reminders including recently completed ones (within 24 hours) for strike-through display
+    fun getRemindersWithRecentCompleted(): Flow<List<ReminderEntity>> {
+        val cutoffMillis = System.currentTimeMillis() - (24L * 60L * 60L * 1000L)
+        return reminderDao.getRemindersWithRecentCompleted(cutoffMillis)
+    }
     val pendingOutboxCount: Flow<Int> = outboxDao.pendingCount()
     val failedOutboxCount: Flow<Int> = outboxDao.failedCount()
     val recentOutbox: Flow<List<OutboxEntity>> = outboxDao.observeRecent(limit = 200)
@@ -48,8 +55,14 @@ class KiranaRepository(private val db: KiranaDatabase) {
     suspend fun devMarkAllUnsyncedOutboxDone() = outboxDao.markAllUnsyncedDone(System.currentTimeMillis())
 
     // --- Milestone D groundwork: Outbox helpers ---
+    /**
+     * Enqueue operation and trigger immediate sync.
+     * Data is synced immediately when online, never left pending.
+     */
     private suspend fun enqueue(op: PendingSyncOp) {
         syncQueue.enqueue(op)
+        // Trigger immediate sync - fire and forget
+        ImmediateSyncManager.triggerSync()
     }
 
     // --- Seeding Data ---
@@ -604,10 +617,29 @@ class KiranaRepository(private val db: KiranaDatabase) {
     }
 
     suspend fun markReminderDone(id: Int) {
-        reminderDao.markDone(id)
+        val now = System.currentTimeMillis()
+        reminderDao.markDoneWithTimestamp(id, now)
         runCatching {
             enqueue(PendingSyncOp(SyncEntityType.REMINDER, id.toString(), SyncOpType.MARK_DONE, JSONObject().put("id", id)))
         }
+    }
+
+    /**
+     * Permanently dismiss a completed reminder (remove it from the list).
+     */
+    suspend fun dismissReminder(id: Int) {
+        reminderDao.deleteReminder(id)
+        runCatching {
+            enqueue(PendingSyncOp(SyncEntityType.REMINDER, id.toString(), SyncOpType.DELETE, JSONObject().put("id", id)))
+        }
+    }
+
+    /**
+     * Clean up old completed reminders (called periodically or on app start).
+     */
+    suspend fun cleanupOldCompletedReminders() {
+        val cutoffMillis = System.currentTimeMillis() - (24L * 60L * 60L * 1000L)
+        reminderDao.deleteOldCompletedReminders(cutoffMillis)
     }
 
     suspend fun deleteReminder(id: Int) {

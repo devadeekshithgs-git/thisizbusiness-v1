@@ -13,6 +13,9 @@ data class ShopSettings(
     val ownerName: String = "",
     val upiId: String = "",
     val whatsappReminderMessage: String = "",
+    // WhatsApp receipt template for billing (editable in Settings).
+    // If blank, the app falls back to a default receipt message.
+    val receiptTemplate: String = "",
     // GST business profile (used by GST Reports export)
     val gstin: String = "",
     val legalName: String = "",
@@ -28,6 +31,7 @@ class ShopSettingsStore(private val context: Context) {
         val ownerName = stringPreferencesKey("owner_name")
         val upiId = stringPreferencesKey("upi_id")
         val whatsappReminderMessage = stringPreferencesKey("whatsapp_reminder_message")
+        val receiptTemplate = stringPreferencesKey("receipt_template")
         val gstin = stringPreferencesKey("gstin")
         val legalName = stringPreferencesKey("legal_name")
         val address = stringPreferencesKey("address")
@@ -40,6 +44,7 @@ class ShopSettingsStore(private val context: Context) {
             ownerName = prefs[Keys.ownerName].orEmpty(),
             upiId = prefs[Keys.upiId].orEmpty(),
             whatsappReminderMessage = prefs[Keys.whatsappReminderMessage].orEmpty(),
+            receiptTemplate = prefs[Keys.receiptTemplate].orEmpty(),
             gstin = prefs[Keys.gstin].orEmpty(),
             legalName = prefs[Keys.legalName].orEmpty(),
             address = prefs[Keys.address].orEmpty(),
@@ -58,6 +63,12 @@ class ShopSettingsStore(private val context: Context) {
     suspend fun saveWhatsAppReminderMessage(message: String) {
         context.shopSettingsDataStore.edit { prefs ->
             prefs[Keys.whatsappReminderMessage] = message.trim()
+        }
+    }
+
+    suspend fun saveReceiptTemplate(template: String) {
+        context.shopSettingsDataStore.edit { prefs ->
+            prefs[Keys.receiptTemplate] = template.trim()
         }
     }
 

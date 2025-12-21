@@ -76,6 +76,131 @@ object WhatsAppHelper {
             context.startActivity(Intent.createChooser(share, "Send reminder"))
         }
     }
+
+    /**
+     * Build a text-based bill receipt message to send via WhatsApp.
+     * @param items List of (itemName, qty, isLoose, unit price, line total)
+     * @param totalAmount Total bill amount
+     * @param paymentMode CASH, UPI, or CREDIT
+     * @param shopName Name of the shop
+     * @param customerName Name of the customer
+     * @param upiId Optional UPI ID to include for future payments
+     * @param template Optional custom template from Settings.
+     *
+     * Supported placeholders in template:
+     * - {shop}, {customer}, {date}, {total}, {payment}, {upi_id}, {upi_link}, {items}
+     */
+    fun buildBillMessage(
+        items: List<BillItem>,
+        totalAmount: Double,
+        paymentMode: String,
+        shopName: String,
+        customerName: String,
+        upiId: String = "",
+        template: String = ""
+    ): String {
+        val shop = shopName.ifBlank { "thisizbusiness" }
+        val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, hh:mm a", java.util.Locale.getDefault())
+        val dateStr = dateFormat.format(java.util.Date())
+        val modeLabel = when (paymentMode) {
+            "CASH" -> "Cash"
+            "UPI" -> "UPI"
+            "CREDIT" -> "Credit (Udhaar)"
+            else -> paymentMode
+        }
+
+        val upiLink = buildUpiLink(
+            upiId = upiId,
+            payeeName = shop,
+            amountInr = totalAmount.toInt().coerceAtLeast(1)
+        ).orEmpty()
+
+        val itemsText = buildString {
+            items.forEach { item ->
+                val qtyStr = if (item.isLoose) {
+                    val kg = item.qty / 1000.0
+                    val kgTxt = String.format("%.3f", kg).trimEnd('0').trimEnd('.')
+                    "${kgTxt}kg"
+                } else {
+                    "${item.qty} pcs"
+                }
+                append("• ${item.name}\n")
+                append("   $qtyStr × ₹${item.unitPrice.toInt()} = ₹${item.lineTotal.toInt()}\n")
+            }
+        }.trimEnd()
+
+        if (template.isNotBlank()) {
+            return template
+                .replace("{shop}", shop)
+                .replace("{customer}", customerName)
+                .replace("{date}", dateStr)
+                .replace("{total}", totalAmount.toInt().toString())
+                .replace("{payment}", modeLabel)
+                .replace("{upi_id}", upiId.trim())
+                .replace("{upi_link}", upiLink)
+                .replace("{items}", itemsText)
+                .trim()
+        }
+
+        return buildString {
+            append("*$shop*\n")
+            append("━━━━━━━━━━━━━━━━━━\n")
+            append("📋 *BILL RECEIPT*\n")
+            append("━━━━━━━━━━━━━━━━━━\n")
+            append("📅 $dateStr\n")
+            append("👤 $customerName\n")
+            append("\n")
+            append("*ITEMS:*\n")
+            append("─────────────────\n")
+            
+            items.forEach { item ->
+                val qtyStr = if (item.isLoose) {
+                    if (item.qty >= 1000) {
+                        val kg = item.qty / 1000.0
+                        String.format("%.2f", kg).trimEnd('0').trimEnd('.') + "kg"
+                    } else {
+                        "${item.qty}g"
+                    }
+                } else {
+                    "${item.qty} pcs"
+                }
+                append("• ${item.name}\n")
+                append("   $qtyStr × ₹${item.unitPrice.toInt()} = *₹${item.lineTotal.toInt()}*\n")
+            }
+            
+            append("─────────────────\n")
+            append("*TOTAL: ₹${totalAmount.toInt()}*\n")
+            append("━━━━━━━━━━━━━━━━━━\n")
+            
+            val modeLabelEmoji = when (paymentMode) {
+                "CASH" -> "💵 Cash"
+                "UPI" -> "📱 UPI"
+                "CREDIT" -> "📝 Credit (Udhaar)"
+                else -> paymentMode
+            }
+            append("Payment: $modeLabelEmoji\n")
+            
+            if (paymentMode == "CREDIT") {
+                append("\n⚠️ _Amount added to your credit._\n")
+            }
+            
+            if (upiId.isNotBlank()) {
+                append("\n💳 UPI ID: ${upiId.trim()}\n")
+            }
+            
+            append("\n_Thank you for shopping!_ 🙏\n")
+            append("─────────────────\n")
+            append("_Powered by thisizbusiness_")
+        }
+    }
+
+    data class BillItem(
+        val name: String,
+        val qty: Int,
+        val isLoose: Boolean,
+        val unitPrice: Double,
+        val lineTotal: Double
+    )
 }
 
 

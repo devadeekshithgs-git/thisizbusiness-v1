@@ -8,11 +8,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -40,6 +38,7 @@ fun VendorsScreen(
     viewModel: PartiesViewModel = viewModel(),
     onAddVendor: () -> Unit = {},
     onVendorClick: (Int) -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onPayNow: (Int) -> Unit = {}
 ) {
     // Reuse PartiesViewModel to show vendors
@@ -47,84 +46,67 @@ fun VendorsScreen(
     val vendorTxById by viewModel.vendorTransactionsById.collectAsState()
     var selectedVendorId by remember { mutableStateOf<Int?>(null) }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(GrayBg)
-    ) {
-        // Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 24.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Vendors",
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.Black,
-                    fontSize = 28.sp,
-                    color = Gray900
-                )
+    val accent = tabCapsuleColor("vendors")
+
+    Box(modifier = modifier.fillMaxSize().background(GrayBg)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            SolidTopBar(
+                title = "Vendor Khata",
+                subtitle = "Track purchases & expenses",
+                onSettings = onOpenSettings,
+                containerColor = accent
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CircleButton(
-                    icon = Icons.Default.Add,
-                    onClick = onAddVendor,
-                    containerColor = Gray900,
-                    contentColor = White
-                )
-                CircleButton(
-                    icon = Icons.Outlined.Settings,
-                    onClick = { /* TODO: Settings */ },
-                    containerColor = White,
-                    contentColor = Gray400
-                )
-            }
-        }
 
-        // Search Bar
-        // Re-using KiranaInput or similar if available, or just a placeholder for now to fix build
-        // Assume SearchField exists in CommonUi or replace with KiranaInput
-        // For now, let's use a simple Box to mimic search bar if SearchField is missing
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .height(50.dp)
-                .background(White, RoundedCornerShape(12.dp))
-                .border(1.dp, Gray200, RoundedCornerShape(12.dp))
-        ) {
-            Text("Search vendors...", modifier = Modifier.align(Alignment.CenterStart).padding(start = 16.dp), color = Gray400)
-        }
+            if (vendors.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("No Vendors", color = Gray500)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    contentPadding = PaddingValues(top = 18.dp, bottom = 100.dp)
+                ) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .background(White, RoundedCornerShape(12.dp))
+                                .border(1.dp, Gray200, RoundedCornerShape(12.dp))
+                        ) {
+                            Text(
+                                "Search vendors...",
+                                modifier = Modifier.align(Alignment.CenterStart).padding(start = 16.dp),
+                                color = Gray400
+                            )
+                        }
+                    }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Vendor List
-        if (vendors.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No Vendors", color = Gray500)
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(vendors) { vendor ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { selectedVendorId = vendor.id }
-                    ) {
-                        PartyCard(party = vendor)
+                    items(vendors, key = { it.id }) { vendor ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedVendorId = vendor.id }
+                        ) {
+                            PartyCard(party = vendor)
+                        }
                     }
                 }
             }
         }
+
+        // Bottom-right Add button (above bottom menu bar)
+        AddFab(
+            onClick = onAddVendor,
+            containerColor = accent,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 24.dp, bottom = 112.dp)
+        )
     }
 
     selectedVendorId?.let { id ->

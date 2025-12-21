@@ -1,10 +1,9 @@
 package com.kiranaflow.app.ui.components.dialogs
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.DateRangePicker
@@ -32,26 +31,27 @@ fun DateRangePickerDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
-        Card(
+        Surface(
             modifier = Modifier
-                .fillMaxWidth(0.96f)
-                .heightIn(max = 720.dp)
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .fillMaxSize()
                 .imePadding(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = BgPrimary)
+            color = BgPrimary
         ) {
             Column(
                 modifier = Modifier
-                    .padding(18.dp)
-                    // Landscape-friendly: if the available height is tight, allow scrolling.
-                    .verticalScroll(rememberScrollState())
+                    .fillMaxSize()
+                    .padding(top = 16.dp)
             ) {
                 // Header
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -68,32 +68,68 @@ fun DateRangePickerDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
-
+                // DateRangePicker takes most of the space - it handles its own scrolling internally
                 DateRangePicker(
                     state = pickerState,
-                    showModeToggle = false,
-                    modifier = Modifier.fillMaxWidth()
+                    showModeToggle = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    title = null,
+                    headline = {
+                        val startDate = pickerState.selectedStartDateMillis
+                        val endDate = pickerState.selectedEndDateMillis
+                        val startLabel = if (startDate != null) {
+                            java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale.getDefault())
+                                .format(java.util.Date(startDate))
+                        } else "Start Date"
+                        val endLabel = if (endDate != null) {
+                            java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale.getDefault())
+                                .format(java.util.Date(endDate))
+                        } else "End Date"
+                        Text(
+                            text = "$startLabel  →  $endLabel",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
                 )
 
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Apply Button
-                KiranaButton(
-                    text = "Apply Range",
-                    onClick = {
-                        val start = pickerState.selectedStartDateMillis
-                        val end = pickerState.selectedEndDateMillis
-                        if (start != null && end != null && end >= start) {
-                            onApply(start, end)
-                        }
-                    },
-                    enabled = pickerState.selectedStartDateMillis != null && pickerState.selectedEndDateMillis != null,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Blue600,
-                        contentColor = BgPrimary
-                    )
-                )
+                // Bottom button row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(BgPrimary)
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancel", fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = {
+                            val start = pickerState.selectedStartDateMillis
+                            val end = pickerState.selectedEndDateMillis
+                            if (start != null && end != null && end >= start) {
+                                onApply(start, end)
+                            }
+                        },
+                        enabled = pickerState.selectedStartDateMillis != null && pickerState.selectedEndDateMillis != null,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Blue600,
+                            contentColor = BgPrimary
+                        )
+                    ) {
+                        Text("Apply", fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }

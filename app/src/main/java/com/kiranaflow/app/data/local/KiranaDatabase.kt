@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReminderEntity::class,
         OutboxEntity::class
     ],
-    version = 12, // v12: GST reporting fields (items.hsnCode, parties.stateCode, transaction_items tax snapshots)
+    version = 13, // v13: Reminders completedAtMillis for 24hr auto-dismiss
     exportSchema = false
 )
 abstract class KiranaDatabase : RoomDatabase() {
@@ -81,6 +81,13 @@ abstract class KiranaDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Reminders: completedAtMillis for 24hr auto-dismiss of completed tasks
+                db.execSQL("ALTER TABLE reminders ADD COLUMN completedAtMillis INTEGER")
+            }
+        }
+
         fun getDatabase(context: Context): KiranaDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -88,7 +95,7 @@ abstract class KiranaDatabase : RoomDatabase() {
                     KiranaDatabase::class.java,
                     "kirana_database"
                 )
-                .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+                .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
                 .fallbackToDestructiveMigration()
                 .build()
                 INSTANCE = instance

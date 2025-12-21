@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import androidx.core.content.FileProvider
@@ -58,7 +59,8 @@ import com.kiranaflow.app.ui.components.CircleButton
 import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
-import com.kiranaflow.app.ui.components.ValleyTopBar
+import com.kiranaflow.app.ui.components.AddFab
+import com.kiranaflow.app.ui.components.SolidTopBar
 import com.kiranaflow.app.ui.theme.*
 import com.kiranaflow.app.util.InputFilters
 import com.kiranaflow.app.util.OcrUtils
@@ -100,6 +102,14 @@ fun InventoryScreen(
 
     val newBarcode = navController.currentBackStackEntry?.savedStateHandle?.getLiveData<String>("barcode")?.observeAsState()
     val scannedBarcodeValue = newBarcode?.value
+    
+    // Prefilled product name from billing search (when user clicks "Add as new product")
+    val prefillProductName: String? =
+        navController.currentBackStackEntry
+            ?.savedStateHandle
+            ?.getLiveData<String>("prefill_name")
+            ?.observeAsState()
+            ?.value
     val scannedItem by viewModel.scannedItem.collectAsState()
     val offProduct by viewModel.offProduct.collectAsState()
     val offLoading by viewModel.offLoading.collectAsState()
@@ -138,92 +148,119 @@ fun InventoryScreen(
         }
     }
 
+    // Open add modal when prefill_name is set (from billing search "Add as new product")
+    LaunchedEffect(prefillProductName) {
+        if (!prefillProductName.isNullOrBlank()) {
+            editingItem = null
+            showAddModal = true
+        }
+    }
+
+    val accent = tabCapsuleColor("inventory")
+
     Box(modifier = Modifier.fillMaxSize().background(GrayBg)) {
+        // Bottom-right Add button (above bottom menu bar)
+        AddFab(
+            onClick = {
+                editingItem = null
+                showAddModal = true
+            },
+            containerColor = accent,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 24.dp, bottom = 112.dp)
+                .zIndex(2f)
+        )
+
         Column(modifier = Modifier.fillMaxSize()) {
-            ValleyTopBar(
+            SolidTopBar(
                 title = "Manage Inventory",
                 subtitle = "Track stock & prices",
-                actionIcon = Icons.Default.Add,
-                onAction = {
-                    editingItem = null
-                    showAddModal = true
-                },
                 onSettings = onOpenSettings,
-                actionColor = AlertOrange,
-                actionIconTint = White
+                containerColor = accent
             )
-            Spacer(modifier = Modifier.height(18.dp))
 
-            Column(modifier = Modifier.padding(horizontal = 24.dp)) {
-                // Search
-                KiranaInput(
-                    value = searchQuery,
-                    onValueChange = viewModel::onSearchChange,
-                    placeholder = "Search items...",
-                    icon = Icons.Default.Search,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
+            // Use single LazyColumn for entire content to support landscape scrolling
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = PaddingValues(top = 18.dp, bottom = 100.dp)
+            ) {
+                // Search as first item
+                item {
+                    KiranaInput(
+                        value = searchQuery,
+                        onValueChange = viewModel::onSearchChange,
+                        placeholder = "Search items...",
+                        icon = Icons.Default.Search,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (selectionMode) {
-                        Text("${selectedItemIds.size} selected", fontWeight = FontWeight.Bold, color = TextPrimary)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(
-                                onClick = { showBulkDeleteConfirm = true },
-                                enabled = selectedItemIds.isNotEmpty()
-                            ) { Text("Delete", color = LossRed, fontWeight = FontWeight.Bold) }
-                            TextButton(
-                                onClick = {
-                                    selectionMode = false
-                                    selectedItemIds = emptySet()
-                                }
-                            ) { Text("Cancel", fontWeight = FontWeight.Bold) }
-                        }
-                    } else {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { showBillScanner = true }) {
-                                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = TextSecondary)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Scan Bill", fontWeight = FontWeight.Bold, color = TextSecondary)
+                // Selection controls
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (selectionMode) {
+                            Text("${selectedItemIds.size} selected", fontWeight = FontWeight.Bold, color = TextPrimary)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(
+                                    onClick = { showBulkDeleteConfirm = true },
+                                    enabled = selectedItemIds.isNotEmpty()
+                                ) { Text("Delete", color = LossRed, fontWeight = FontWeight.Bold) }
+                                TextButton(
+                                    onClick = {
+                                        selectionMode = false
+                                        selectedItemIds = emptySet()
+                                    }
+                                ) { Text("Cancel", fontWeight = FontWeight.Bold) }
                             }
-                            TextButton(onClick = { selectionMode = true }) {
-                                Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { showBillScanner = true }) {
+                                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = TextSecondary)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Scan Bill", fontWeight = FontWeight.Bold, color = TextSecondary)
+                                }
+                                TextButton(onClick = { selectionMode = true }) {
+                                    Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Select", fontWeight = FontWeight.Bold, color = TextSecondary)
+                                }
                             }
                         }
                     }
                 }
 
-                // List
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(bottom = 100.dp)
-                ) {
-                    items(items) { item ->
-                        val isSelected = selectedItemIds.contains(item.id)
-                        InventoryItemCardSelectable(
-                            item = item,
-                            selectionMode = selectionMode,
-                            isSelected = isSelected,
-                            onClick = {
-                                if (selectionMode) {
-                                    selectedItemIds = if (isSelected) selectedItemIds - item.id else selectedItemIds + item.id
-                                } else {
-                                    editingItem = item
-                                    showAddModal = true
-                                }
-                            },
-                            onLongPress = {
-                                if (!selectionMode) selectionMode = true
-                                selectedItemIds = selectedItemIds + item.id
+                // Inventory items list
+                items(items, key = { it.id }) { item ->
+                    val isSelected = selectedItemIds.contains(item.id)
+                    InventoryItemCardSelectable(
+                        item = item,
+                        selectionMode = selectionMode,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (selectionMode) {
+                                selectedItemIds = if (isSelected) selectedItemIds - item.id else selectedItemIds + item.id
+                            } else {
+                                editingItem = item
+                                showAddModal = true
                             }
-                        )
-                    }
+                        },
+                        onLongPress = {
+                            if (!selectionMode) selectionMode = true
+                            selectedItemIds = selectedItemIds + item.id
+                        },
+                        onAdjustStock = { delta ->
+                            viewModel.adjustStock(item, delta)
+                        },
+                        onAddReceivedStock = { qty ->
+                            viewModel.addReceivedStock(item, qty)
+                        }
+                    )
                 }
             }
         }
@@ -231,6 +268,8 @@ fun InventoryScreen(
         if (showAddModal) {
             AddItemDialog(
                 onDismiss = {
+                    // Clear prefill_name so it doesn't retrigger
+                    navController.currentBackStackEntry?.savedStateHandle?.remove<String>("prefill_name")
                     // When launched from Billing "Add now to inventory", X should return to Billing (wireframe expectation).
                     if (returnToBilling) {
                         Log.d("InventoryNav", "Dismiss AddItemDialog -> return to Billing")
@@ -266,6 +305,8 @@ fun InventoryScreen(
                     runCatching {
                         Toast.makeText(context, "Saved successfully", Toast.LENGTH_SHORT).show()
                     }
+                    // Clear prefill_name so it doesn't retrigger
+                    navController.currentBackStackEntry?.savedStateHandle?.remove<String>("prefill_name")
                     if (returnToBilling) {
                         Log.d("InventoryNav", "Saved item from Billing flow -> return to Billing")
                         navController.currentBackStackEntry?.savedStateHandle?.remove<String>("return_to")
@@ -280,6 +321,8 @@ fun InventoryScreen(
                 },
                 onDelete = { itemToDelete ->
                     viewModel.deleteItem(itemToDelete)
+                    // Clear prefill_name so it doesn't retrigger
+                    navController.currentBackStackEntry?.savedStateHandle?.remove<String>("prefill_name")
                     if (returnToBilling) {
                         Log.d("InventoryNav", "Deleted item from Billing flow -> return to Billing")
                         navController.currentBackStackEntry?.savedStateHandle?.remove<String>("return_to")
@@ -308,7 +351,8 @@ fun InventoryScreen(
                     addAll(items.map { it.category }.map { it.trim() }.filter { it.isNotBlank() }.distinct().sorted())
                 },
                 vendors = vendors,
-                onAddVendor = { name, phone, gst -> repo.addVendor(name, phone, gst) }
+                onAddVendor = { name, phone, gst -> repo.addVendor(name, phone, gst) },
+                prefillName = prefillProductName
             )
         }
     }
@@ -640,11 +684,13 @@ private fun InventoryItemCardSelectable(
     selectionMode: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    onAdjustStock: (Int) -> Unit = {},
+    onAddReceivedStock: (Int) -> Unit = {}
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Top
     ) {
         if (selectionMode) {
             // Checkbox sits to the LEFT, outside the card (requested).
@@ -652,12 +698,15 @@ private fun InventoryItemCardSelectable(
                 checked = isSelected,
                 onCheckedChange = { onClick() },
                 modifier = Modifier
-                    .padding(end = 8.dp)
+                    .padding(end = 8.dp, top = 16.dp)
                     .size(24.dp)
             )
         }
-        InventoryItemCard(
+        InventoryItemCardWithQuickStock(
             item = item,
+            selectionMode = selectionMode,
+            onAdjustStock = onAdjustStock,
+            onAddReceivedStock = onAddReceivedStock,
             modifier = Modifier
                 .weight(1f)
                 .combinedClickable(onClick = onClick, onLongClick = onLongPress)
@@ -746,9 +795,10 @@ fun InventoryItemCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val lowStock = item.stock < item.reorderPoint
+                    val lowStock = if (item.isLoose) item.stockKg < item.reorderPoint else item.stock < item.reorderPoint
+                    val stockText = if (item.isLoose) "${item.stockKg} kg" else "${item.stock}"
                     Badge(
-                        text = "${item.stock} in Stock",
+                        text = "$stockText in Stock",
                         color = if (lowStock) LossRed else KiranaGreen,
                         bg = if (lowStock) LossRedBg else KiranaGreenBg
                     )
@@ -757,6 +807,290 @@ fun InventoryItemCard(
                         color = TextSecondary,
                         bg = Gray100
                     )
+                }
+            }
+        }
+
+    }
+}
+
+/**
+ * Enhanced inventory card with quick stock adjustment controls.
+ * Shows +/- buttons and a field to add received stock without opening the detail dialog.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun InventoryItemCardWithQuickStock(
+    item: ItemEntity,
+    selectionMode: Boolean,
+    onAdjustStock: (Int) -> Unit,
+    onAddReceivedStock: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showAddStockField by remember { mutableStateOf(false) }
+    var addStockValue by remember { mutableStateOf("") }
+    
+    KiranaCard(modifier = modifier, onClick = null) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top
+            ) {
+                // Product image thumbnail
+                Surface(
+                    modifier = Modifier.size(56.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Gray50
+                ) {
+                    if (!item.imageUri.isNullOrBlank()) {
+                        AsyncImage(
+                            model = item.imageUri,
+                            contentDescription = item.name,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Inventory2, contentDescription = null, tint = Gray400)
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.width(12.dp))
+                
+                // Main content - takes remaining space
+                Column(modifier = Modifier.weight(1f)) {
+                    // Name and Price row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Text(
+                            text = item.name,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = TextPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (item.isLoose) "₹${item.pricePerKg.toInt()}/kg" else "₹${item.price.toInt()}",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 18.sp,
+                            color = TextPrimary
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(4.dp))
+                    
+                    // Category and location
+                    Text(
+                        text = "${item.category} • ${item.rackLocation ?: "No Loc"}",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    
+                    Spacer(modifier = Modifier.height(10.dp))
+                    
+                    // Badges row
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val lowStock = if (item.isLoose) item.stockKg < item.reorderPoint else item.stock < item.reorderPoint
+                        val stockText = if (item.isLoose) "${item.stockKg} kg" else "${item.stock}"
+                        Badge(
+                            text = "$stockText in Stock",
+                            color = if (lowStock) LossRed else KiranaGreen,
+                            bg = if (lowStock) LossRedBg else KiranaGreenBg
+                        )
+                        Badge(
+                            text = "${item.marginPercentage.toInt()}% Margin",
+                            color = TextSecondary,
+                            bg = Gray100
+                        )
+                    }
+                }
+            }
+            
+            // Quick Stock Adjustment Row (only show when not in selection mode)
+            if (!selectionMode) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Divider(color = Gray100, thickness = 1.dp)
+                Spacer(modifier = Modifier.height(10.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Quick +/- controls
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        // Minus button
+                        Surface(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clickable { onAdjustStock(-1) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = LossRedBg
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Text(
+                                    text = "−",
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 20.sp,
+                                    color = LossRed
+                                )
+                            }
+                        }
+                        
+                        // Current stock display
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Gray50,
+                            modifier = Modifier.widthIn(min = 60.dp)
+                        ) {
+                            Text(
+                                text = if (item.isLoose) "${item.stockKg} kg" else "${item.stock}",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = TextPrimary
+                            )
+                        }
+                        
+                        // Plus button
+                        Surface(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clickable { onAdjustStock(1) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = KiranaGreenBg
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Text(
+                                    text = "+",
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 20.sp,
+                                    color = KiranaGreen
+                                )
+                            }
+                        }
+                    }
+                    
+                    // Add Stock button/field
+                    if (showAddStockField) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = addStockValue,
+                                onValueChange = { v ->
+                                    addStockValue = v.filter { it.isDigit() }.take(5)
+                                },
+                                modifier = Modifier.width(80.dp).height(44.dp),
+                                placeholder = { Text("Qty", fontSize = 12.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                ),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = White,
+                                    unfocusedContainerColor = White,
+                                    focusedBorderColor = KiranaGreen,
+                                    unfocusedBorderColor = Gray200
+                                ),
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                            
+                            // Confirm add
+                            Surface(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clickable {
+                                        val qty = addStockValue.toIntOrNull() ?: 0
+                                        if (qty > 0) {
+                                            onAddReceivedStock(qty)
+                                            addStockValue = ""
+                                            showAddStockField = false
+                                        }
+                                    },
+                                shape = RoundedCornerShape(10.dp),
+                                color = KiranaGreen
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = "Add stock",
+                                        tint = White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            
+                            // Cancel
+                            Surface(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clickable {
+                                        addStockValue = ""
+                                        showAddStockField = false
+                                    },
+                                shape = RoundedCornerShape(10.dp),
+                                color = Gray100
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Cancel",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        // "Add Stock" button
+                        Surface(
+                            modifier = Modifier.clickable { showAddStockField = true },
+                            shape = RoundedCornerShape(10.dp),
+                            color = Blue100
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = Blue600,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Add Stock",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Blue600
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -795,7 +1129,8 @@ fun AddItemDialog(
     onConsumeOff: () -> Unit,
     categories: List<String>,
     vendors: List<PartyEntity>,
-    onAddVendor: suspend (String, String, String?) -> PartyEntity?
+    onAddVendor: suspend (String, String, String?) -> PartyEntity?,
+    prefillName: String? = null
 ) {
     val context = LocalContext.current
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -839,6 +1174,13 @@ fun AddItemDialog(
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
             barcode = scannedBarcode
+        }
+    }
+
+    // Prefill name from billing search (when user clicks "Add as new product")
+    LaunchedEffect(prefillName) {
+        if (!prefillName.isNullOrBlank() && name.isBlank()) {
+            name = prefillName
         }
     }
 
@@ -1162,7 +1504,7 @@ fun AddItemDialog(
                             value = costPrice,
                             onValueChange = { costPrice = InputFilters.decimal(it) },
                             placeholder = "0",
-                            label = "Cost Price (₹)",
+                            label = if (isLoose) "Cost per KG (₹)" else "Cost Price (₹)",
                             modifier = Modifier.weight(1f),
                             keyboardType = KeyboardType.Decimal
                         )

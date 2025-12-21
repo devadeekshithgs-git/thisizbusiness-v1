@@ -54,7 +54,8 @@ import com.kiranaflow.app.ui.components.SearchField
 import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
-import com.kiranaflow.app.ui.components.ValleyTopBar
+import com.kiranaflow.app.ui.components.AddFab
+import com.kiranaflow.app.ui.components.SolidTopBar
 import com.kiranaflow.app.ui.components.dialogs.CompletePaymentModal
 import com.kiranaflow.app.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
@@ -67,6 +68,7 @@ import java.util.Locale
 import java.io.File
 import com.kiranaflow.app.util.InputFilters
 import androidx.compose.ui.text.input.KeyboardType
+import kotlin.math.roundToInt
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -87,7 +89,7 @@ fun BillingScreen(
     // Persisted shop settings (for UPI QR)
     val context = LocalContext.current
     val settingsStore = remember(context) { ShopSettingsStore(context) }
-    val shopSettings by settingsStore.settings.collectAsState(initial = ShopSettings("", "", "", ""))
+    val shopSettings by settingsStore.settings.collectAsState(initial = ShopSettings())
 
     // Stable repository for customer list + add-new-customer from payment modal
     val db = remember(context) { KiranaDatabase.getDatabase(context) }
@@ -103,11 +105,6 @@ fun BillingScreen(
     var showPriceEditDialog by remember { mutableStateOf(false) }
     var showTxnSavedOverlay by remember { mutableStateOf(false) }
     var screenMode by rememberSaveable { mutableStateOf("BILL") } // BILL | EXPENSE
-    var showQuickAddProduct by remember { mutableStateOf(false) }
-    var quickAddName by remember { mutableStateOf("") }
-    var quickAddPrice by remember { mutableStateOf("") }
-    var quickAddStock by remember { mutableStateOf("") }
-    var quickAddNameError by remember { mutableStateOf(false) }
 
     // Loose items (sold by weight): store selected step size (grams) per item in cart.
     val looseStepByItemId = remember { mutableStateMapOf<Int, Int>() }
@@ -295,29 +292,21 @@ fun BillingScreen(
     Box(modifier = Modifier.fillMaxSize().background(GrayBg)) {
         // Bill screen content (blurred/faded when scanner overlay is open)
         val canBlur = Build.VERSION.SDK_INT >= 31
+        val contentFadeModifier =
+            if (showBillingScanner && canBlur) Modifier.blur(14.dp).graphicsLayer { alpha = 0.35f }
+            else if (showBillingScanner) Modifier.graphicsLayer { alpha = 0.35f }
+            else Modifier
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .then(
-                    // blur() uses RenderEffect on newer devices; avoid instability on older devices.
-                    if (showBillingScanner && canBlur) Modifier.blur(14.dp).graphicsLayer { alpha = 0.35f }
-                    else if (showBillingScanner) Modifier.graphicsLayer { alpha = 0.35f }
-                    else Modifier
-                )
+                .then(contentFadeModifier)
         ) {
-            ValleyTopBar(
+            SolidTopBar(
                 title = if (screenMode == "BILL") "New Bill" else "Record Expense",
                 subtitle = if (screenMode == "BILL") "Scan or search items" else "Track business spendings",
-                actionIcon = Icons.Default.QrCodeScanner,
-                onAction = {
-                    if (screenMode == "BILL") {
-                        showBillingScanner = true
-                        scanOverlayState = BillingScanOverlayState.Idle
-                    }
-                },
                 onSettings = onOpenSettings,
-                actionColor = if (screenMode == "BILL") KiranaGreen else LossRed,
-                actionIconTint = White
+                containerColor = tabCapsuleColor("bill")
             )
 
             Spacer(modifier = Modifier.height(18.dp))
@@ -356,179 +345,168 @@ fun BillingScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             if (screenMode == "BILL") {
-                // Search (scanner action moved to valley button)
-                SearchField(
-                    query = searchQuery,
-                    onQueryChange = { viewModel.searchItems(it) },
-                    placeholder = "Search items manually...",
+                // Use LazyColumn for the entire bill content to support landscape scrolling
+                Column(
                     modifier = Modifier
+                        .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Search Results Dropdown
-                if (searchQuery.isNotEmpty()) {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            if (searchResults.isEmpty()) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            quickAddName = searchQuery.trim()
-                                            quickAddPrice = ""
-                                            quickAddStock = ""
-                                            quickAddNameError = false
-                                            showQuickAddProduct = true
-                                        }
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = null, tint = KiranaGreen)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "Add \"$searchQuery\" as new product",
-                                        modifier = Modifier.weight(1f),
-                                        color = TextPrimary,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            } else {
-                                searchResults.take(5).forEach { item ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                viewModel.addItemToBill(item, 1)
-                                            }
-                                            .padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
-                                        val priceText =
-                                            if (item.isLoose) "₹${item.pricePerKg.toInt()}/kg" else "₹${item.price.toInt()}"
-                                        Text(priceText, fontWeight = FontWeight.Bold, color = TextPrimary)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                // Cart List or Empty State
-                if (billItems.isEmpty()) {
-                    Column(
+                ) {
+                    LazyColumn(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxWidth()
-                            .padding(32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                            .fillMaxWidth(),
+                        contentPadding = PaddingValues(bottom = 16.dp)
                     ) {
-                        Icon(
-                            Icons.Default.Inventory2,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = TextSecondary
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Empty Cart", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Scan or search to start billing", color = TextSecondary, fontSize = 14.sp)
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 120.dp)
-                    ) {
-                        items(billItems) { billItem ->
-                            val isLoose = billItem.item.isLoose
-                            if (isLoose) {
-                                LaunchedEffect(billItem.item.id) {
-                                    if (looseStepByItemId[billItem.item.id] == null) {
-                                        looseStepByItemId[billItem.item.id] = 250
+                        // Search field as first item
+                        item {
+                            SearchField(
+                                query = searchQuery,
+                                onQueryChange = { viewModel.searchItems(it) },
+                                placeholder = "Search items manually...",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+
+                        // Search Results Dropdown
+                        if (searchQuery.isNotEmpty()) {
+                            item {
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        if (searchResults.isEmpty()) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        // Navigate to full add product screen in inventory
+                                                        val productName = searchQuery.trim()
+                                                        viewModel.onSearchChange("") // Clear search
+                                                        navController.navigate("inventory") { launchSingleTop = true; restoreState = true }
+                                                        navController.currentBackStackEntry?.savedStateHandle?.set("prefill_name", productName)
+                                                        navController.currentBackStackEntry?.savedStateHandle?.set("return_to", "bill")
+                                                    }
+                                                    .padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Add, contentDescription = null, tint = KiranaGreen)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Add \"$searchQuery\" as new product",
+                                                    modifier = Modifier.weight(1f),
+                                                    color = TextPrimary,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                        } else {
+                                            searchResults.take(5).forEach { item ->
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable {
+                                                            viewModel.addItemToBill(item, 1)
+                                                        }
+                                                        .padding(12.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
+                                                    val priceText =
+                                                        if (item.isLoose) "₹${item.pricePerKg.toInt()}/kg" else "₹${item.price.toInt()}"
+                                                    Text(priceText, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                                }
+                                            }
+                                        }
                                     }
                                 }
+                                Spacer(modifier = Modifier.height(8.dp))
                             }
-                            val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 250) else 1
-                            val subtotal =
-                                if (isLoose) billItem.item.pricePerKg * (billItem.qty / 1000.0)
-                                else billItem.item.price * billItem.qty
-                            CartItemCard(
-                                itemName = billItem.item.name,
-                                rackLocation = billItem.item.rackLocation,
-                                imageUri = billItem.item.imageUri,
-                                qty = billItem.qty,
-                                isLoose = isLoose,
-                                pricePerKg = billItem.item.pricePerKg,
-                                unitPrice = billItem.item.price,
-                                subtotal = subtotal,
-                                selectedStepGrams = step,
-                                onSelectStepGrams = { grams ->
-                                    // Portion chips set BOTH the active +/- step and the quantity immediately.
-                                    // This ensures the subtotal updates instantly (requested behavior).
-                                    looseStepByItemId[billItem.item.id] = grams
-                                    viewModel.updateItemQuantity(billItem.item.id, grams)
-                                },
-                                onCustomWeight = {
-                                    customWeightForItemId = billItem.item.id
-                                    customWeightText = billItem.qty.toString()
-                                },
-                                onInc = { viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step) },
-                                onDec = {
-                                    val newQty = billItem.qty - step
-                                    if (newQty > 0) viewModel.updateItemQuantity(billItem.item.id, newQty)
-                                    else viewModel.removeItemFromBill(billItem.item.id)
-                                },
-                                onDelete = { viewModel.removeItemFromBill(billItem.item.id) },
-                                onEditPrice = {
-                                    priceEditItem = billItem
-                                    showPriceEditDialog = true
+                        }
+
+                        // Cart List or Empty State
+                        if (billItems.isEmpty()) {
+                            item {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(32.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Inventory2,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(64.dp),
+                                        tint = TextSecondary
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text("Empty Cart", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Scan or search to start billing", color = TextSecondary, fontSize = 14.sp)
                                 }
-                            )
+                            }
+                        } else {
+                            items(billItems, key = { it.item.id }) { billItem ->
+                                val isLoose = billItem.item.isLoose
+                                if (isLoose) {
+                                    LaunchedEffect(billItem.item.id) {
+                                        if (looseStepByItemId[billItem.item.id] == null) {
+                                            looseStepByItemId[billItem.item.id] = 250
+                                        }
+                                    }
+                                }
+                                val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 250) else 1
+                                val subtotal =
+                                    if (isLoose) billItem.item.pricePerKg * (billItem.qty / 1000.0)
+                                    else billItem.item.price * billItem.qty
+                                CartItemCard(
+                                    itemName = billItem.item.name,
+                                    rackLocation = billItem.item.rackLocation,
+                                    imageUri = billItem.item.imageUri,
+                                    qty = billItem.qty,
+                                    isLoose = isLoose,
+                                    pricePerKg = billItem.item.pricePerKg,
+                                    unitPrice = billItem.item.price,
+                                    subtotal = subtotal,
+                                    selectedStepGrams = step,
+                                    onSelectStepGrams = { grams ->
+                                        // Portion chips set BOTH the active +/- step and the quantity immediately.
+                                        // This ensures the subtotal updates instantly (requested behavior).
+                                        looseStepByItemId[billItem.item.id] = grams
+                                        viewModel.updateItemQuantity(billItem.item.id, grams)
+                                    },
+                                    onCustomWeight = {
+                                        customWeightForItemId = billItem.item.id
+                                        val kg = billItem.qty / 1000.0
+                                        customWeightText = String.format("%.3f", kg).trimEnd('0').trimEnd('.')
+                                    },
+                                    onInc = { viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step) },
+                                    onDec = {
+                                        val newQty = billItem.qty - step
+                                        if (newQty > 0) viewModel.updateItemQuantity(billItem.item.id, newQty)
+                                        else viewModel.removeItemFromBill(billItem.item.id)
+                                    },
+                                    onDelete = { viewModel.removeItemFromBill(billItem.item.id) },
+                                    onEditPrice = {
+                                        priceEditItem = billItem
+                                        showPriceEditDialog = true
+                                    }
+                                )
+                                Spacer(modifier = Modifier.height(12.dp).padding(horizontal = 16.dp))
+                            }
                         }
                     }
-                }
-                // Total Amount and Checkout
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = BgPrimary)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("TOTAL AMOUNT", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
-                            Text("₹${totalAmount.toInt()}", fontSize = 24.sp, fontWeight = FontWeight.Black, color = TextPrimary)
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = { showCheckoutDialog = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = billItems.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (billItems.isNotEmpty()) ProfitGreen else Gray300,
-                                contentColor = Color.White,
-                                disabledContentColor = Color.White.copy(alpha = 0.7f)
-                            )
-                        ) {
-                            Icon(Icons.Default.Check, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Checkout", fontWeight = FontWeight.Bold, color = Color.White)
-                        }
-                    }
+
+                    BillingCheckoutBar(
+                        enabled = billItems.isNotEmpty(),
+                        onCheckout = { showCheckoutDialog = true },
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
             } else {
                 // EXPENSE MODE (A6)
@@ -886,6 +864,52 @@ fun BillingScreen(
                 }
             }
         }
+
+        // Bottom-right overlay (above bottom menu bar):
+        // - Add button on top
+        // - Total amount directly below it
+        if (screenMode == "BILL") {
+            Column(
+                modifier = contentFadeModifier
+                    .then(
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 24.dp, bottom = 112.dp)
+                    ),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                AddFab(
+                    onClick = {
+                        showBillingScanner = true
+                        scanOverlayState = BillingScanOverlayState.Idle
+                    },
+                    containerColor = tabCapsuleColor("bill")
+                )
+
+                Surface(
+                    color = BgPrimary,
+                    shape = RoundedCornerShape(16.dp),
+                    tonalElevation = 8.dp
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Text(
+                            "TOTAL AMOUNT",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextSecondary,
+                            letterSpacing = 1.sp
+                        )
+                        Text(
+                            "₹${totalAmount.toInt()}",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Black,
+                            color = TextPrimary
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // Billing scanner overlay (camera on top of blurred bill screen)
@@ -926,11 +950,32 @@ fun BillingScreen(
 
     // Complete Payment Modal
     if (showCheckoutDialog && billItems.isNotEmpty()) {
+        // Map bill items to the format expected by the modal for WhatsApp sharing
+        val billItemDataList = remember(billItems) {
+            billItems.map { cartItem ->
+                val lineTotal = if (cartItem.item.isLoose) {
+                    cartItem.item.pricePerKg * (cartItem.qty / 1000.0)
+                } else {
+                    cartItem.item.price * cartItem.qty
+                }
+                val unitPrice = if (cartItem.item.isLoose) cartItem.item.pricePerKg else cartItem.item.price
+                com.kiranaflow.app.ui.components.dialogs.BillItemData(
+                    name = cartItem.item.name,
+                    qty = cartItem.qty,
+                    isLoose = cartItem.item.isLoose,
+                    unitPrice = unitPrice,
+                    lineTotal = lineTotal
+                )
+            }
+        }
+        
         CompletePaymentModal(
             totalAmount = totalAmount,
             customers = customers,
             shopName = shopSettings.shopName,
             upiId = shopSettings.upiId,
+            receiptTemplate = shopSettings.receiptTemplate,
+            billItems = billItemDataList,
             onDismiss = { showCheckoutDialog = false },
             onComplete = { customerId, paymentMethod ->
                 viewModel.completeBill(paymentMethod, customerId)
@@ -1005,85 +1050,6 @@ fun BillingScreen(
         )
     }
 
-    if (showQuickAddProduct) {
-        AlertDialog(
-            onDismissRequest = { showQuickAddProduct = false },
-            title = { Text("Add New Product", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
-                        value = quickAddName,
-                        onValueChange = { quickAddName = it; if (quickAddNameError) quickAddNameError = false },
-                        label = { Text("Name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (quickAddNameError) {
-                        Text(
-                            text = "Product name is required",
-                            color = LossRed,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    OutlinedTextField(
-                        value = quickAddPrice,
-                        onValueChange = { quickAddPrice = InputFilters.decimal(it) },
-                        label = { Text("Selling Price (₹)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal)
-                    )
-                    OutlinedTextField(
-                        value = quickAddStock,
-                        onValueChange = { quickAddStock = InputFilters.digitsOnly(it) },
-                        label = { Text("Stock") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                }
-            },
-            confirmButton = {
-                val scope = rememberCoroutineScope()
-                TextButton(onClick = {
-                    val name = quickAddName.trim()
-                    if (name.isBlank()) {
-                        quickAddNameError = true
-                        return@TextButton
-                    }
-                    val price = quickAddPrice.toDoubleOrNull() ?: 0.0
-                    val stock = quickAddStock.toIntOrNull() ?: 0
-                    scope.launch {
-                        val saved = repo.addItemReturning(
-                            ItemEntity(
-                                name = name,
-                                price = price,
-                                stock = stock,
-                                category = "General",
-                                rackLocation = null,
-                                marginPercentage = 0.0,
-                                barcode = null,
-                                costPrice = 0.0,
-                                gstPercentage = null,
-                                reorderPoint = 10,
-                                vendorId = null,
-                                imageUri = null,
-                                expiryDateMillis = null,
-                                isDeleted = false
-                            )
-                        )
-                        viewModel.addItemToBill(saved, 1)
-                        showQuickAddProduct = false
-                    }
-                }) { Text("Add") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showQuickAddProduct = false }) { Text("Cancel") }
-            }
-        )
-    }
-
     if (showTxnSavedOverlay) {
         Box(modifier = Modifier.fillMaxSize()) {
             // Soft scrim so it feels like a brief confirmation dialog (but auto-dismisses quickly).
@@ -1125,23 +1091,24 @@ fun BillingScreen(
     if (customWeightForItemId != null) {
         AlertDialog(
             onDismissRequest = { customWeightForItemId = null },
-            title = { Text("Custom weight (grams)", fontWeight = FontWeight.Bold) },
+            title = { Text("Custom weight (kg)", fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     KiranaInput(
                         value = customWeightText,
-                        onValueChange = { customWeightText = InputFilters.digitsOnly(it) },
-                        placeholder = "e.g. 750",
-                        label = "WEIGHT (g)",
-                        keyboardType = KeyboardType.Number
+                        onValueChange = { customWeightText = InputFilters.decimal(it, maxDecimals = 3) },
+                        placeholder = "e.g. 1.25",
+                        label = "WEIGHT (kg)",
+                        keyboardType = KeyboardType.Decimal
                     )
-                    Text("Tip: 1 kg = 1000 g", color = TextSecondary, fontSize = 12.sp)
+                    Text("Example: 0.5 = 500g", color = TextSecondary, fontSize = 12.sp)
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     val id = customWeightForItemId ?: return@TextButton
-                    val grams = customWeightText.toIntOrNull() ?: 0
+                    val kg = customWeightText.toDoubleOrNull() ?: 0.0
+                    val grams = (kg * 1000.0).roundToInt()
                     if (grams > 0) {
                         // Custom weight also becomes the active step going forward.
                         looseStepByItemId[id] = grams
@@ -1152,6 +1119,36 @@ fun BillingScreen(
             },
             dismissButton = { TextButton(onClick = { customWeightForItemId = null }) { Text("Cancel") } }
         )
+    }
+}
+
+@Composable
+private fun BillingCheckoutBar(
+    enabled: Boolean,
+    onCheckout: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = BgPrimary)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Button(
+                onClick = onCheckout,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = enabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (enabled) ProfitGreen else Gray300,
+                    contentColor = Color.White,
+                    disabledContentColor = Color.White.copy(alpha = 0.7f)
+                )
+            ) {
+                Icon(Icons.Default.Check, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Checkout", fontWeight = FontWeight.Bold, color = Color.White)
+            }
+        }
     }
 }
 
