@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
@@ -18,9 +19,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.consumeAllChanges
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import android.util.Log
 import androidx.lifecycle.lifecycleScope
@@ -70,6 +77,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -199,6 +207,18 @@ fun KiranaApp() {
     var showSettingsDrawer by rememberSaveable { mutableStateOf(false) }
     var quickAction by rememberSaveable { mutableStateOf<String?>(null) }
 
+    val mainTabs = remember { listOf("home", "customers", "bill", "inventory", "vendors") }
+
+    fun navigateToTab(tab: String) {
+        if (currentTab != tab) {
+            navController.navigate(tab) {
+                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
+
     // Milestone D groundwork: global connectivity + outbox state (shared across UI).
     val ctx = LocalContext.current
     val monitor = remember(ctx) { ConnectivityMonitor(ctx) }
@@ -227,29 +247,86 @@ fun KiranaApp() {
                     // #region agent log
                     Log.d("Nav", "Tab selected=$tab currentTab=$currentTab currentRoute=$currentRoute")
                     // #endregion
-                    if (currentTab != tab) {
-                        navController.navigate(tab) {
-                            popUpTo(navController.graph.startDestinationId) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
+                    navigateToTab(tab)
                 },
                 onTabLongPress = { tab ->
                     if (tab == "home") return@KiranaBottomNav
                     quickAction = tab
-                    if (currentTab != tab) {
-                        navController.navigate(tab) {
-                            popUpTo(navController.graph.startDestinationId) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
+                    navigateToTab(tab)
                 }
             )
         }
     ) { innerPadding ->
-        Box(modifier = Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val swipeThresholdPx = remember(density) { with(density) { 72.dp.toPx() } }
+        var rootSize by remember { mutableStateOf(IntSize.Zero) }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { rootSize = it }
+                // Swipe in the center (WhatsApp/Instagram-style) to switch between bottom tabs.
+                // Only enabled on the main tab routes to avoid breaking nested detail flows.
+                .pointerInput(currentRoute, currentTab, rootSize) {
+                    var armed = false
+                    var dx = 0f
+                    var dy = 0f
+
+                    detectDragGestures(
+                        onDragStart = { start: Offset ->
+                            dx = 0f
+                            dy = 0f
+
+                            val route = currentRoute
+                            if (route == null || route !in mainTabs) {
+                                armed = false
+                                return@detectDragGestures
+                            }
+
+                            val w = rootSize.width.toFloat()
+                            val h = rootSize.height.toFloat()
+                            if (w <= 0f || h <= 0f) {
+                                armed = false
+                                return@detectDragGestures
+                            }
+
+                            // Require gesture to start in center region:
+                            // - avoid status/header area (top 15%)
+                            // - avoid bottom nav area (bottom 20%)
+                            val inCenter =
+                                (start.x in (w * 0.15f)..(w * 0.85f)) &&
+                                (start.y in (h * 0.15f)..(h * 0.80f))
+                            armed = inCenter
+                        },
+                        onDragCancel = { armed = false },
+                        onDragEnd = { armed = false },
+                        onDrag = { change, dragAmount ->
+                            if (!armed) return@detectDragGestures
+
+                            dx += dragAmount.x
+                            dy += dragAmount.y
+
+                            val adx = abs(dx)
+                            val ady = abs(dy)
+
+                            // "Straight line" preference: ensure horizontal intent dominates vertical.
+                            if (adx >= swipeThresholdPx && adx > (ady * 1.3f)) {
+                                val idx = mainTabs.indexOf(currentTab)
+                                if (idx >= 0) {
+                                    // WhatsApp-style: swipe left -> next tab, swipe right -> previous tab
+                                    val dir = if (dx < 0f) 1 else -1
+                                    val next = (idx + dir).coerceIn(0, mainTabs.lastIndex)
+                                    if (next != idx) navigateToTab(mainTabs[next])
+                                }
+
+                                // Consume after triggering so the underlying screen doesn't also react.
+                                change.consumeAllChanges()
+                                armed = false
+                            }
+                        }
+                    )
+                }
+        ) {
             Box(modifier = Modifier.padding(innerPadding)) {
             NavHost(
                 navController = navController,
@@ -378,7 +455,8 @@ fun KiranaApp() {
                         type = "CUSTOMER",
                         triggerAdd = quickAction == "customers",
                         onTriggerConsumed = { quickAction = null },
-                        onOpenSettings = { showSettingsDrawer = true }
+                        onOpenSettings = { showSettingsDrawer = true },
+                        onOpenTransaction = { txId -> navController.navigate("transaction/$txId") }
                     )
                 }
                 composable("bill") { 
@@ -414,7 +492,8 @@ fun KiranaApp() {
                         onTriggerConsumed = { quickAction = null },
                         onOpenSettings = { showSettingsDrawer = true },
                         onOpenReorder = { navController.navigate("vendors/reorder") },
-                        onOpenPayables = { navController.navigate("vendors/payables") }
+                        onOpenPayables = { navController.navigate("vendors/payables") },
+                        onOpenTransaction = { txId -> navController.navigate("transaction/$txId") }
                     )
                 }
                 composable("vendors/reorder") {

@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReminderEntity::class,
         OutboxEntity::class
     ],
-    version = 13, // v13: Reminders completedAtMillis for 24hr auto-dismiss
+    version = 16, // v16: items.batchSize (optional) for quick stock +/- in inventory
     exportSchema = false
 )
 abstract class KiranaDatabase : RoomDatabase() {
@@ -88,6 +88,83 @@ abstract class KiranaDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Parties: optional UPI ID (VPA) for UPI payment redirects (vendors/customers)
+                db.execSQL("ALTER TABLE parties ADD COLUMN upiId TEXT")
+            }
+        }
+
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // transaction_items.qty: INTEGER (legacy) -> REAL (kg for loose items)
+                // Also normalize unit away from grams: GRAM/G/GM/GMS -> KG, and convert qty accordingly.
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transaction_items_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        transactionId INTEGER NOT NULL,
+                        itemId INTEGER,
+                        itemNameSnapshot TEXT NOT NULL,
+                        qty REAL NOT NULL,
+                        unit TEXT NOT NULL DEFAULT 'PCS',
+                        price REAL NOT NULL,
+                        hsnCodeSnapshot TEXT,
+                        gstRate REAL NOT NULL DEFAULT 0.0,
+                        taxableValue REAL NOT NULL DEFAULT 0.0,
+                        cgstAmount REAL NOT NULL DEFAULT 0.0,
+                        sgstAmount REAL NOT NULL DEFAULT 0.0,
+                        igstAmount REAL NOT NULL DEFAULT 0.0,
+                        FOREIGN KEY(transactionId) REFERENCES transactions(id) ON DELETE CASCADE,
+                        FOREIGN KEY(itemId) REFERENCES items(id) ON DELETE SET NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    INSERT INTO transaction_items_new (
+                        id, transactionId, itemId, itemNameSnapshot, qty, unit, price,
+                        hsnCodeSnapshot, gstRate, taxableValue, cgstAmount, sgstAmount, igstAmount
+                    )
+                    SELECT
+                        id,
+                        transactionId,
+                        itemId,
+                        itemNameSnapshot,
+                        CASE
+                            WHEN UPPER(unit) IN ('GRAM','G','GM','GMS','GRAMS') THEN (qty * 1.0) / 1000.0
+                            ELSE (qty * 1.0)
+                        END AS qty,
+                        CASE
+                            WHEN UPPER(unit) IN ('GRAM','G','GM','GMS','GRAMS') THEN 'KG'
+                            ELSE unit
+                        END AS unit,
+                        price,
+                        hsnCodeSnapshot,
+                        gstRate,
+                        taxableValue,
+                        cgstAmount,
+                        sgstAmount,
+                        igstAmount
+                    FROM transaction_items
+                    """.trimIndent()
+                )
+
+                db.execSQL("DROP TABLE transaction_items")
+                db.execSQL("ALTER TABLE transaction_items_new RENAME TO transaction_items")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_transaction_items_transactionId ON transaction_items(transactionId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_transaction_items_itemId ON transaction_items(itemId)")
+            }
+        }
+
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Items: optional batch size for quick stock adjustments (nullable).
+                db.execSQL("ALTER TABLE items ADD COLUMN batchSize INTEGER")
+            }
+        }
+
         fun getDatabase(context: Context): KiranaDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -95,7 +172,16 @@ abstract class KiranaDatabase : RoomDatabase() {
                     KiranaDatabase::class.java,
                     "kirana_database"
                 )
-                .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                .addMigrations(
+                    MIGRATION_8_9,
+                    MIGRATION_9_10,
+                    MIGRATION_10_11,
+                    MIGRATION_11_12,
+                    MIGRATION_12_13,
+                    MIGRATION_13_14,
+                    MIGRATION_14_15,
+                    MIGRATION_15_16
+                )
                 .fallbackToDestructiveMigration()
                 .build()
                 INSTANCE = instance

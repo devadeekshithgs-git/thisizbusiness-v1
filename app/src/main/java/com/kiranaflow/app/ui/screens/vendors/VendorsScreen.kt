@@ -44,6 +44,7 @@ fun VendorsScreen(
     // Reuse PartiesViewModel to show vendors
     val vendors by viewModel.vendors.collectAsState()
     val vendorTxById by viewModel.vendorTransactionsById.collectAsState()
+    val txItemsByTxId by viewModel.transactionItemsByTransactionId.collectAsState()
     var selectedVendorId by remember { mutableStateOf<Int?>(null) }
 
     val accent = tabCapsuleColor("vendors")
@@ -115,9 +116,19 @@ fun VendorsScreen(
             VendorDetailSheet(
                 vendor = vendor,
                 transactions = vendorTxById[id].orEmpty(),
+                transactionItemsByTxId = txItemsByTxId,
                 onDismiss = { selectedVendorId = null },
                 onSavePayment = { amount, method ->
                     viewModel.recordVendorPayment(vendor, amount, method)
+                },
+                onUpdateUpiId = { newUpi ->
+                    viewModel.updateParty(
+                        vendor,
+                        name = vendor.name,
+                        phone = vendor.phone,
+                        gstNumber = vendor.gstNumber,
+                        upiId = newUpi
+                    )
                 }
             )
         }

@@ -33,6 +33,10 @@ fun ValleyTopBar(
     actionColor: Color = BgPrimary,
     actionIconTint: Color = contentColorForBackground(actionColor),
     backgroundColor: Color = GrayBg,
+    // If false, the action icon is shown in the top-right next to settings (Billing requirement).
+    showCenterActionButton: Boolean = true,
+    // Allow hiding the action icon entirely (e.g., Expense mode).
+    showActionIcon: Boolean = true,
 ) {
     val headerContentColor = contentColorForBackground(containerColor)
     val headerSubtitleColor = headerContentColor.copy(alpha = 0.85f)
@@ -48,8 +52,9 @@ fun ValleyTopBar(
      * We explicitly reserve extra height (26.dp) so content starts below the overlapped area.
      */
     Column(modifier = modifier.fillMaxWidth()) {
-        // Main bar (fixed height)
-        Box(modifier = Modifier.fillMaxWidth().height(132.dp)) {
+        // Main bar
+        val barHeight = if (showCenterActionButton) 132.dp else 108.dp
+        Box(modifier = Modifier.fillMaxWidth().height(barHeight)) {
             Surface(
                 color = containerColor,
                 shape = RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp),
@@ -62,7 +67,7 @@ fun ValleyTopBar(
                     verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // Left spacer to keep title centered relative to settings icon
+                    // Left spacer to keep title centered relative to right actions
                     Box(modifier = Modifier.size(44.dp))
 
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -71,48 +76,68 @@ fun ValleyTopBar(
                         Text(subtitle, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = headerSubtitleColor)
                     }
 
-                    SettingsIconButton(
-                        onClick = onSettings,
-                        containerColor = settingsBg,
-                        contentColor = headerContentColor,
-                        borderColor = settingsBorder
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (!showCenterActionButton && showActionIcon) {
+                            // Action icon button next to settings (scan icon requirement)
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(settingsBg)
+                                    .border(1.dp, settingsBorder, CircleShape)
+                                    .clickable { onAction() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(actionIcon, contentDescription = null, tint = headerContentColor)
+                            }
+                        }
+                        SettingsIconButton(
+                            onClick = onSettings,
+                            containerColor = settingsBg,
+                            contentColor = headerContentColor,
+                            borderColor = settingsBorder
+                        )
+                    }
                 }
             }
         }
 
-        // Reserve the protruding space below the bar (so lists start below it)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(26.dp)
-        ) {
-            // Valley cutout (matches background behind)
+        if (showCenterActionButton && showActionIcon) {
+            // Reserve the protruding space below the bar (so lists start below it)
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    // 92dp circle with 26dp below the bar => overlap 66dp upward into the bar.
-                    .offset(y = (-66).dp)
-                    .size(92.dp)
-                    .background(backgroundColor, CircleShape)
-            )
-
-            // Floating action button inside the valley
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    // 64dp fab with 10dp below the bar => overlap 54dp upward into the bar.
-                    .offset(y = (-54).dp)
-                    .size(64.dp)
-                    .shadow(14.dp, CircleShape, spotColor = actionColor.copy(alpha = 0.35f))
-                    .clip(CircleShape)
-                    .background(actionColor)
-                    .border(1.dp, Gray200, CircleShape)
-                    .clickable { onAction() },
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .height(26.dp)
             ) {
-                Icon(actionIcon, contentDescription = null, tint = actionIconTint, modifier = Modifier.size(28.dp))
+                // Valley cutout (matches background behind)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        // 92dp circle with 26dp below the bar => overlap 66dp upward into the bar.
+                        .offset(y = (-66).dp)
+                        .size(92.dp)
+                        .background(backgroundColor, CircleShape)
+                )
+
+                // Floating action button inside the valley
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        // 64dp fab with 10dp below the bar => overlap 54dp upward into the bar.
+                        .offset(y = (-54).dp)
+                        .size(64.dp)
+                        .shadow(14.dp, CircleShape, spotColor = actionColor.copy(alpha = 0.35f))
+                        .clip(CircleShape)
+                        .background(actionColor)
+                        .border(1.dp, Gray200, CircleShape)
+                        .clickable { onAction() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(actionIcon, contentDescription = null, tint = actionIconTint, modifier = Modifier.size(28.dp))
+                }
             }
+        } else {
+            Spacer(modifier = Modifier.height(10.dp))
         }
     }
 }

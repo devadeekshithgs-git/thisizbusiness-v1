@@ -39,6 +39,9 @@ val AlertOrange = Color(0xFFEA580C)
 val AlertOrangeBg = Color(0xFFFFF7ED)
 val AlertOrangeBorder = Color(0xFFFED7AA)
 
+// Warning/attention highlight
+val WarningYellow = Color(0xFFF59E0B)
+
 // Grays
 val Gray50 = Color(0xFFF9FAFB)
 val GrayBg = BgCard // Main background

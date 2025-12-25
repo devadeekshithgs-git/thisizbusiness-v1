@@ -10,6 +10,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Needed for dependencies published under com.github.* (e.g., uCrop).
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

@@ -1,6 +1,7 @@
 package com.kiranaflow.app.ui.screens.inventory
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kiranaflow.app.data.local.ItemEntity
@@ -9,6 +10,7 @@ import com.kiranaflow.app.data.local.PartyEntity
 import com.kiranaflow.app.data.remote.OffProductInfo
 import com.kiranaflow.app.data.remote.OpenFoodFactsClient
 import com.kiranaflow.app.data.repository.KiranaRepository
+import com.kiranaflow.app.util.ProductImageStore
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import android.util.Log
@@ -43,6 +45,18 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _offLoading = MutableStateFlow(false)
     val offLoading: StateFlow<Boolean> = _offLoading.asStateFlow()
+
+    enum class ItemSaveMode { ADDED, UPDATED }
+    sealed interface ItemSaveEvent {
+        data class Success(val mode: ItemSaveMode, val itemId: Int, val itemName: String) : ItemSaveEvent
+        data class Failure(val message: String) : ItemSaveEvent
+    }
+
+    private val _itemSaveEvents = MutableSharedFlow<ItemSaveEvent>(extraBufferCapacity = 1)
+    val itemSaveEvents: SharedFlow<ItemSaveEvent> = _itemSaveEvents.asSharedFlow()
+
+    private val _isSavingItem = MutableStateFlow(false)
+    val isSavingItem: StateFlow<Boolean> = _isSavingItem.asStateFlow()
 
     fun onSearchChange(query: String) {
         _searchQuery.value = query
@@ -93,38 +107,103 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
         location: String?,
         barcode: String?,
         gst: Double?,
+        hsnCode: String? = null,
         reorder: Int?,
         imageUri: String?,
         vendorId: Int? = null,
-        expiryDateMillis: Long? = null
+        expiryDateMillis: Long? = null,
+        batchSize: Int? = null
     ) {
         viewModelScope.launch {
+            if (_isSavingItem.value) return@launch
+            _isSavingItem.value = true
             val cleanBarcode = barcode?.trim()?.ifBlank { null }
+            val cleanName = name.trim()
+            val isNewItem = id == null || id == 0
+            val cleanHsn = hsnCode?.trim()?.ifBlank { null }
+
+            // Persist product photo (if any) into app-private storage so we don't depend on temporary
+            // gallery grants or cache files. This prevents crashes/blank thumbnails after Save.
+            val stableImageUri: String? = withContext(Dispatchers.IO) {
+                ProductImageStore.persistIfNeeded(
+                    context = getApplication(),
+                    uriString = imageUri
+                )
+            }
+
+            // Duplicate checks for new items (or when name/barcode changed during edit)
+            if (isNewItem) {
+                // Check for duplicate name (case-insensitive)
+                val existingByName = itemDao.getItemByName(cleanName)
+                if (existingByName != null) {
+                    _itemSaveEvents.tryEmit(ItemSaveEvent.Failure(message = "An item named \"$cleanName\" already exists"))
+                    _isSavingItem.value = false
+                    return@launch
+                }
+                // Check for duplicate barcode (if provided)
+                if (!cleanBarcode.isNullOrBlank()) {
+                    val existingByBarcode = itemDao.getItemByBarcode(cleanBarcode)
+                    if (existingByBarcode != null) {
+                        _itemSaveEvents.tryEmit(ItemSaveEvent.Failure(message = "Barcode \"$cleanBarcode\" is already used by \"${existingByBarcode.name}\""))
+                        _isSavingItem.value = false
+                        return@launch
+                    }
+                }
+            } else {
+                // Editing existing item - check if name/barcode conflicts with OTHER items
+                val existingByName = itemDao.getItemByName(cleanName)
+                if (existingByName != null && existingByName.id != id) {
+                    _itemSaveEvents.tryEmit(ItemSaveEvent.Failure(message = "An item named \"$cleanName\" already exists"))
+                    _isSavingItem.value = false
+                    return@launch
+                }
+                if (!cleanBarcode.isNullOrBlank()) {
+                    val existingByBarcode = itemDao.getItemByBarcode(cleanBarcode)
+                    if (existingByBarcode != null && existingByBarcode.id != id) {
+                        _itemSaveEvents.tryEmit(ItemSaveEvent.Failure(message = "Barcode \"$cleanBarcode\" is already used by \"${existingByBarcode.name}\""))
+                        _isSavingItem.value = false
+                        return@launch
+                    }
+                }
+            }
+
             val effectivePricePerKg = if (isLoose) pricePerKg.coerceAtLeast(0.0) else 0.0
             val effectiveSell = if (isLoose) effectivePricePerKg else sell
             val margin = if (cost > 0) ((effectiveSell - cost) / cost * 100) else 0.0
+            val cleanBatchSize = batchSize?.takeIf { it > 0 }
 
-            repository.updateItem(
-                ItemEntity(
-                    id = id ?: 0,
-                    name = name.trim(),
-                    category = category.trim().ifBlank { "General" },
-                    costPrice = cost,
-                    price = effectiveSell,
-                    isLoose = isLoose,
-                    pricePerKg = effectivePricePerKg,
-                    stockKg = if (isLoose) stockKg.coerceAtLeast(0.0) else 0.0,
-                    stock = if (isLoose) 0 else stock,
-                    rackLocation = location?.trim()?.ifBlank { null },
-                    marginPercentage = margin,
-                    barcode = cleanBarcode,
-                    vendorId = vendorId,
-                    gstPercentage = gst,
-                    reorderPoint = reorder ?: 10,
-                    imageUri = imageUri,
-                    expiryDateMillis = expiryDateMillis
-                )
+            val mode = if (isNewItem) ItemSaveMode.ADDED else ItemSaveMode.UPDATED
+            val entity = ItemEntity(
+                id = id ?: 0,
+                name = cleanName,
+                category = category.trim().ifBlank { "General" },
+                costPrice = cost,
+                price = effectiveSell,
+                isLoose = isLoose,
+                pricePerKg = effectivePricePerKg,
+                stockKg = if (isLoose) stockKg.coerceAtLeast(0.0) else 0.0,
+                stock = if (isLoose) 0 else stock,
+                rackLocation = location?.trim()?.ifBlank { null },
+                marginPercentage = margin,
+                barcode = cleanBarcode,
+                vendorId = vendorId,
+                gstPercentage = gst,
+                hsnCode = cleanHsn,
+                reorderPoint = reorder ?: 10,
+                imageUri = stableImageUri,
+                expiryDateMillis = expiryDateMillis,
+                batchSize = if (isLoose) null else cleanBatchSize
             )
+
+            runCatching {
+                repository.updateItem(entity)
+            }.onSuccess { savedId ->
+                _itemSaveEvents.tryEmit(ItemSaveEvent.Success(mode = mode, itemId = savedId, itemName = entity.name))
+            }.onFailure { t ->
+                Log.e("InventoryViewModel", "saveItem failed", t)
+                _itemSaveEvents.tryEmit(ItemSaveEvent.Failure(message = t.message ?: "Could not save item"))
+            }
+            _isSavingItem.value = false
         }
     }
     
@@ -180,6 +259,16 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
                 item.copy(stock = newStock.coerceAtLeast(0))
             }
             repository.updateItem(updated)
+        }
+    }
+
+    /**
+     * Set loose stock (KG) to an absolute value (for quick entry).
+     */
+    fun setStockKg(item: ItemEntity, newStockKg: Double) {
+        if (!item.isLoose) return
+        viewModelScope.launch {
+            repository.updateItem(item.copy(stockKg = newStockKg.coerceAtLeast(0.0)))
         }
     }
 

@@ -11,8 +11,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -37,6 +39,9 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
+private enum class CustomerTxTypeFilter { ALL, SALE, PAYMENT }
+private enum class CustomerTxSort { LATEST_FIRST, OLDEST_FIRST }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomerDetailSheet(
@@ -44,7 +49,8 @@ fun CustomerDetailSheet(
     transactions: List<TransactionEntity>,
     transactionItemsByTxId: Map<Int, List<TransactionItemEntity>> = emptyMap(),
     onDismiss: () -> Unit,
-    onSavePayment: (Double, String) -> Unit
+    onSavePayment: (Double, String) -> Unit,
+    onOpenTransaction: (Int) -> Unit = {}
 ) {
     var showPaymentForm by remember { mutableStateOf(false) }
     var amountText by remember { mutableStateOf("") }
@@ -53,18 +59,113 @@ fun CustomerDetailSheet(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // In-sheet filters/search/sort
+    var txSearchQuery by remember { mutableStateOf("") }
+    var productQuery by remember { mutableStateOf("") }
+    var typeFilter by remember { mutableStateOf(CustomerTxTypeFilter.ALL) }
+    var sortOrder by remember { mutableStateOf(CustomerTxSort.LATEST_FIRST) }
+    var showDateRangePicker by remember { mutableStateOf(false) }
+    val dateRangePickerState = rememberDateRangePickerState()
+
     // Filter transactions for this customer (SALE + INCOME payment from customer).
     // (Previously had a logically unreachable branch that IDE correctly warned about.)
-    val customerTransactions = transactions
+    val baseCustomerTransactions = transactions
         .asSequence()
         .filter { tx -> tx.customerId == customer.id && (tx.type == "SALE" || tx.type == "INCOME") }
-        .sortedByDescending { it.date }
         .toList()
 
-    // Group transactions by date
-    val transactionsByDate = customerTransactions.groupBy { tx ->
-        val cal = Calendar.getInstance().apply { timeInMillis = tx.date }
-        SimpleDateFormat("d MMM yyyy", Locale.getDefault()).format(cal.time)
+    fun endOfDay(millis: Long): Long {
+        val cal = Calendar.getInstance().apply { timeInMillis = millis }
+        cal.set(Calendar.HOUR_OF_DAY, 23)
+        cal.set(Calendar.MINUTE, 59)
+        cal.set(Calendar.SECOND, 59)
+        cal.set(Calendar.MILLISECOND, 999)
+        return cal.timeInMillis
+    }
+
+    val filteredSortedTransactions = remember(
+        baseCustomerTransactions,
+        transactionItemsByTxId,
+        txSearchQuery,
+        productQuery,
+        typeFilter,
+        sortOrder,
+        dateRangePickerState.selectedStartDateMillis,
+        dateRangePickerState.selectedEndDateMillis
+    ) {
+        val q = txSearchQuery.trim()
+        val pq = productQuery.trim()
+
+        val start = dateRangePickerState.selectedStartDateMillis
+        val end = dateRangePickerState.selectedEndDateMillis?.let(::endOfDay)
+
+        fun matchesQuery(tx: TransactionEntity): Boolean {
+            if (q.isBlank()) return true
+            val items = transactionItemsByTxId[tx.id].orEmpty()
+            return tx.title.contains(q, ignoreCase = true) ||
+                tx.paymentMode.contains(q, ignoreCase = true) ||
+                tx.time.contains(q, ignoreCase = true) ||
+                items.any { it.itemNameSnapshot.contains(q, ignoreCase = true) }
+        }
+
+        fun matchesProduct(tx: TransactionEntity): Boolean {
+            if (pq.isBlank()) return true
+            val items = transactionItemsByTxId[tx.id].orEmpty()
+            return items.any { it.itemNameSnapshot.contains(pq, ignoreCase = true) }
+        }
+
+        fun matchesType(tx: TransactionEntity): Boolean {
+            return when (typeFilter) {
+                CustomerTxTypeFilter.ALL -> true
+                CustomerTxTypeFilter.SALE -> tx.type == "SALE"
+                CustomerTxTypeFilter.PAYMENT -> tx.type == "INCOME"
+            }
+        }
+
+        fun matchesDate(tx: TransactionEntity): Boolean {
+            if (start == null || end == null) return true
+            return tx.date in start..end
+        }
+
+        baseCustomerTransactions
+            .asSequence()
+            .filter(::matchesType)
+            .filter(::matchesDate)
+            .filter(::matchesQuery)
+            .filter(::matchesProduct)
+            .sortedWith(
+                when (sortOrder) {
+                    CustomerTxSort.LATEST_FIRST -> compareByDescending<TransactionEntity> { it.date }
+                    CustomerTxSort.OLDEST_FIRST -> compareBy<TransactionEntity> { it.date }
+                }
+            )
+            .toList()
+    }
+
+    // Group transactions by date, preserving the order of the already-sorted list.
+    val transactionsByDate = remember(filteredSortedTransactions) {
+        val fmt = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
+        val map = linkedMapOf<String, MutableList<TransactionEntity>>()
+        for (tx in filteredSortedTransactions) {
+            val cal = Calendar.getInstance().apply { timeInMillis = tx.date }
+            val key = fmt.format(cal.time)
+            map.getOrPut(key) { mutableListOf() }.add(tx)
+        }
+        map
+    }
+
+    if (showDateRangePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDateRangePicker = false },
+            confirmButton = {
+                TextButton(onClick = { showDateRangePicker = false }) { Text("Apply") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDateRangePicker = false }) { Text("Cancel") }
+            }
+        ) {
+            DateRangePicker(state = dateRangePickerState)
+        }
     }
 
     ModalBottomSheet(
@@ -114,6 +215,95 @@ fun CustomerDetailSheet(
                                 fontSize = 16.sp
                             ),
                             color = ProfitGreen
+                        )
+                    }
+                }
+            }
+
+            // Search + filters (in-sheet)
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                ) {
+                    KiranaInput(
+                        value = txSearchQuery,
+                        onValueChange = { txSearchQuery = it },
+                        placeholder = "Search transactions...",
+                        label = "SEARCH"
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    KiranaInput(
+                        value = productQuery,
+                        onValueChange = { productQuery = it },
+                        placeholder = "Filter by product bought (e.g. Sugar)",
+                        label = "PRODUCT"
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AssistChip(
+                            onClick = { showDateRangePicker = true },
+                            label = {
+                                val start = dateRangePickerState.selectedStartDateMillis
+                                val end = dateRangePickerState.selectedEndDateMillis
+                                if (start == null || end == null) Text("Any time")
+                                else {
+                                    val df = SimpleDateFormat("d MMM", Locale.getDefault())
+                                    Text("${df.format(Date(start))} - ${df.format(Date(end))}")
+                                }
+                            },
+                            leadingIcon = { Icon(Icons.Default.CalendarMonth, contentDescription = null) }
+                        )
+
+                        var sortMenuOpen by remember { mutableStateOf(false) }
+                        Box {
+                            AssistChip(
+                                onClick = { sortMenuOpen = true },
+                                label = {
+                                    Text(
+                                        when (sortOrder) {
+                                            CustomerTxSort.LATEST_FIRST -> "Latest first"
+                                            CustomerTxSort.OLDEST_FIRST -> "Oldest first"
+                                        }
+                                    )
+                                },
+                                leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null) }
+                            )
+                            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Latest to oldest") },
+                                    onClick = { sortOrder = CustomerTxSort.LATEST_FIRST; sortMenuOpen = false }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Oldest to latest") },
+                                    onClick = { sortOrder = CustomerTxSort.OLDEST_FIRST; sortMenuOpen = false }
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = typeFilter == CustomerTxTypeFilter.ALL,
+                            onClick = { typeFilter = CustomerTxTypeFilter.ALL },
+                            label = { Text("All") }
+                        )
+                        FilterChip(
+                            selected = typeFilter == CustomerTxTypeFilter.SALE,
+                            onClick = { typeFilter = CustomerTxTypeFilter.SALE },
+                            label = { Text("Sales") }
+                        )
+                        FilterChip(
+                            selected = typeFilter == CustomerTxTypeFilter.PAYMENT,
+                            onClick = { typeFilter = CustomerTxTypeFilter.PAYMENT },
+                            label = { Text("Payments") }
                         )
                     }
                 }
@@ -204,6 +394,24 @@ fun CustomerDetailSheet(
             }
 
             // Transaction History
+            if (filteredSortedTransactions.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = BgCard)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("No transactions match your filters", fontWeight = FontWeight.Bold, color = TextPrimary)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Try clearing search, product filter, or date range.", color = TextSecondary, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
             transactionsByDate.forEach { (dateStr, txList) ->
                 // Highlighted Date header with bright background
                 item {
@@ -230,7 +438,8 @@ fun CustomerDetailSheet(
                 items(txList) { tx ->
                     ExpandableTransactionCard(
                         transaction = tx,
-                        items = transactionItemsByTxId[tx.id] ?: emptyList()
+                        items = transactionItemsByTxId[tx.id] ?: emptyList(),
+                        onOpen = { onOpenTransaction(tx.id) }
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
@@ -275,7 +484,8 @@ fun CustomerDetailSheet(
 @Composable
 private fun ExpandableTransactionCard(
     transaction: TransactionEntity,
-    items: List<TransactionItemEntity>
+    items: List<TransactionItemEntity>,
+    onOpen: () -> Unit
 ) {
     var isExpanded by remember { mutableStateOf(false) }
     
@@ -293,7 +503,10 @@ private fun ExpandableTransactionCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = hasItems) { isExpanded = !isExpanded },
+            .clickable {
+                // Always open full transaction details on tap.
+                onOpen()
+            },
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isExpanded && hasItems) Blue50 else BgPrimary
@@ -401,9 +614,11 @@ private fun ExpandableTransactionCard(
                     if (hasItems) {
                         Icon(
                             imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = if (isExpanded) "Collapse" else "Tap to see items",
+                            contentDescription = if (isExpanded) "Collapse" else "Items available",
                             tint = InteractiveCyan,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clickable { isExpanded = !isExpanded }
                         )
                     }
                 }
@@ -412,7 +627,7 @@ private fun ExpandableTransactionCard(
             // Tap hint for collapsed state
             if (hasItems && !isExpanded) {
                 Text(
-                    "Tap to see items purchased",
+                    "Tap to view full bill",
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = 11.sp
                     ),
@@ -450,15 +665,28 @@ private fun ExpandableTransactionCard(
                     )
                     
                     items.forEachIndexed { index, item ->
-                        val displayQty = if (item.unit == "GRAM" && item.qty >= 1000) {
-                            "${item.qty / 1000.0}kg"
-                        } else if (item.unit == "GRAM") {
-                            "${item.qty}g"
-                        } else {
-                            "× ${item.qty}"
+                        fun formatKgShort(kg: Double): String {
+                            if (kg <= 0.0) return "0kg"
+                            val txt = if (kg % 1.0 == 0.0) kg.toInt().toString()
+                            else String.format("%.3f", kg).trimEnd('0').trimEnd('.')
+                            return "${txt}kg"
                         }
-                        
-                        val multiplier = if (item.unit == "GRAM") item.qty / 1000.0 else item.qty.toDouble()
+
+                        val unitUp = item.unit.trim().uppercase()
+                        val qtyKg = when (unitUp) {
+                            "KG", "KGS" -> item.qty
+                            "GRAM", "G", "GM", "GMS", "GRAMS" -> item.qty / 1000.0
+                            else -> item.qty
+                        }
+                        val displayQty = if (unitUp == "KG" || unitUp == "KGS") {
+                            "× ${formatKgShort(item.qty)}"
+                        } else if (unitUp in setOf("GRAM", "G", "GM", "GMS", "GRAMS")) {
+                            "× ${formatKgShort(qtyKg)}"
+                        } else {
+                            "× ${item.qty.toInt()}"
+                        }
+
+                        val multiplier = if (unitUp == "KG" || unitUp == "KGS") item.qty else if (unitUp in setOf("GRAM", "G", "GM", "GMS", "GRAMS")) qtyKg else item.qty
                         val itemTotal = item.price * multiplier
                         
                         Card(

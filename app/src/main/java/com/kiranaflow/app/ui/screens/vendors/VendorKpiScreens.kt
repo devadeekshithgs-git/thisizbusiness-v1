@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,7 +23,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kiranaflow.app.data.local.ItemEntity
 import com.kiranaflow.app.data.local.PartyEntity
 import com.kiranaflow.app.ui.components.KiranaInput
+import com.kiranaflow.app.ui.components.dialogs.VendorDetailSheet
 import com.kiranaflow.app.ui.theme.*
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.concurrent.TimeUnit
 
 @Composable
@@ -156,6 +161,7 @@ fun TotalPayablesScreen(
     var reminderForVendor by remember { mutableStateOf<PartyEntity?>(null) }
     var showReminderDialog by remember { mutableStateOf(false) }
     var payVendor by remember { mutableStateOf<PartyEntity?>(null) }
+    var detailVendor by remember { mutableStateOf<PartyEntity?>(null) }
     var payAmountText by remember { mutableStateOf("") }
     var payMode by remember { mutableStateOf("CASH") }
     var paying by remember { mutableStateOf(false) }
@@ -197,6 +203,7 @@ fun TotalPayablesScreen(
                         val lastDue = recent.firstOrNull { it.type == "EXPENSE" && it.paymentMode == "CREDIT" }
                         lastDue?.title
                     },
+                    onOpenDetails = { detailVendor = v },
                     onRemind = {
                         reminderForVendor = v
                         showReminderDialog = true
@@ -311,12 +318,28 @@ fun TotalPayablesScreen(
             }
         )
     }
+
+    // Vendor detail (what you owe for + full itemized history)
+    if (detailVendor != null) {
+        val v = detailVendor!!
+        VendorDetailSheet(
+            vendor = v,
+            transactions = vendorTxById[v.id].orEmpty(),
+            transactionItemsByTxId = txItemsByTxId,
+            onDismiss = { detailVendor = null },
+            onSavePayment = { amount, method ->
+                viewModel.recordVendorPayment(v, amount, method)
+            }
+        )
+    }
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun PayableVendorRow(
     v: PartyEntity,
     lastDueNote: String?,
+    onOpenDetails: () -> Unit,
     onRemind: () -> Unit
     ,
     onPay: () -> Unit
@@ -326,36 +349,65 @@ private fun PayableVendorRow(
         colors = CardDefaults.cardColors(containerColor = BgPrimary),
         shape = RoundedCornerShape(14.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onOpenDetails
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(v.name, fontWeight = FontWeight.Bold, color = TextPrimary, maxLines = 1)
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(v.phone, color = TextSecondary, fontSize = 12.sp)
-                if (!lastDueNote.isNullOrBlank()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(v.name, fontWeight = FontWeight.Bold, color = TextPrimary, maxLines = 1)
                     Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Last due: $lastDueNote",
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 1
-                    )
+                    Text(v.phone, color = TextSecondary, fontSize = 12.sp)
+                    if (!lastDueNote.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = lastDueNote,
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("PAYABLE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
+                    Text("₹${payable.toInt()}", fontWeight = FontWeight.Black, color = LossRed)
                 }
             }
-            Column(horizontalAlignment = Alignment.End) {
-                Text("₹${payable.toInt()}", fontWeight = FontWeight.Black, color = LossRed)
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onPay, contentPadding = PaddingValues(0.dp)) {
-                        Text("Pay", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+
+            // Bottom-center buttons (clearly visible)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Row(
+                    modifier = Modifier.widthIn(max = 360.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Button(
+                        onClick = onPay,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Blue600, contentColor = BgPrimary),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Payable", fontWeight = FontWeight.Bold)
                     }
-                    TextButton(onClick = onRemind, contentPadding = PaddingValues(0.dp)) {
-                        Text("Remind", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    OutlinedButton(
+                        onClick = onRemind,
+                        modifier = Modifier.weight(1f),
+                        border = BorderStroke(1.dp, Gray200),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary, containerColor = BgPrimary),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Remind", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -373,65 +425,200 @@ private fun QuickReminderDialog(
 ) {
     var reminderTitle by remember { mutableStateOf(defaultTitle) }
     var note by remember { mutableStateOf("") }
-    // Default: tomorrow 9 AM
+    // Default: tomorrow 9 AM (local)
     var dueAt by remember {
         val now = System.currentTimeMillis()
-        mutableStateOf(now + TimeUnit.DAYS.toMillis(1))
+        val tomorrowLocalDate = Instant.ofEpochMilli(now)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
+            .plusDays(1)
+        mutableStateOf(
+            tomorrowLocalDate
+                .atTime(9, 0)
+                .atZone(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli()
+        )
     }
 
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    val datePickerState = rememberDatePickerState(
+        initialSelectedDateMillis = utcMidnightMillisForLocalDateFromEpochMillis(dueAt)
     )
+    val initialTime = remember(dueAt) {
+        val zdt = Instant.ofEpochMilli(dueAt).atZone(ZoneId.systemDefault())
+        zdt.hour to zdt.minute
+    }
+    val timePickerState = rememberTimePickerState(
+        initialHour = initialTime.first,
+        initialMinute = initialTime.second,
+        is24Hour = false
+    )
+
+    // Keep dueAt synced with picker selections.
+    LaunchedEffect(datePickerState.selectedDateMillis, timePickerState.hour, timePickerState.minute) {
+        val selectedDateUtcMillis = datePickerState.selectedDateMillis ?: return@LaunchedEffect
+        dueAt = combineUtcDateMillisWithLocalTime(
+            dateUtcMillis = selectedDateUtcMillis,
+            hour = timePickerState.hour,
+            minute = timePickerState.minute
+        )
+    }
+
+    // Note: In the Compose Material3 version used by this project, DatePickerState/TimePickerState
+    // selection fields are read-only (val). We keep `dueAt` as the source of truth and avoid
+    // trying to programmatically force-sync picker state (it will sync via user interaction).
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = BgPrimary,
-        dragHandle = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Surface(
-                    modifier = Modifier.size(width = 40.dp, height = 4.dp),
-                    shape = RoundedCornerShape(2.dp),
-                    color = Gray100
-                ) {}
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-        },
-        modifier = Modifier.fillMaxSize()
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
     ) {
-        Column(
+        LazyColumn(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+                .fillMaxWidth()
+                .fillMaxHeight()
+                .navigationBarsPadding()
+                .imePadding(),
+            contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                // Title
-                Text(
-                    text = title,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 24.sp,
-                    color = TextPrimary
-                )
-                
-                Spacer(modifier = Modifier.height(8.dp))
+            // Header (match VendorDetailSheet style)
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = title,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 20.sp,
+                        color = TextPrimary
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextSecondary)
+                    }
+                }
+            }
 
-                // Reminder Title Input
+            // Main highlight: Date + Time picker (always visible)
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = AlertOrange.copy(alpha = 0.08f)),
+                    border = BorderStroke(1.dp, AlertOrange.copy(alpha = 0.15f))
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "When should we remind you?",
+                            fontWeight = FontWeight.Black,
+                            color = TextPrimary
+                        )
+
+                        Surface(
+                            color = AlertOrange.copy(alpha = 0.10f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = java.text.SimpleDateFormat(
+                                    "EEEE, dd MMM yyyy • hh:mm a",
+                                    java.util.Locale.getDefault()
+                                ).format(java.util.Date(dueAt)),
+                                color = AlertOrange,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+
+                        DatePicker(
+                            state = datePickerState,
+                            showModeToggle = false,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Divider(color = Gray100)
+
+                        TimePicker(
+                            state = timePickerState,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
+            // Quick presets (optional convenience)
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Quick presets",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = TextSecondary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        QuickDateButton(
+                            text = "In 2 hours",
+                            isSelected = false,
+                            onClick = { dueAt = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        QuickDateButton(
+                            text = "Tomorrow 9am",
+                            isSelected = false,
+                            onClick = {
+                                val now = System.currentTimeMillis()
+                                val tomorrowLocalDate = Instant.ofEpochMilli(now)
+                                    .atZone(ZoneId.systemDefault())
+                                    .toLocalDate()
+                                    .plusDays(1)
+                                dueAt = tomorrowLocalDate
+                                    .atTime(9, 0)
+                                    .atZone(ZoneId.systemDefault())
+                                    .toInstant()
+                                    .toEpochMilli()
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        QuickDateButton(
+                            text = "In 3 days",
+                            isSelected = false,
+                            onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(3) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        QuickDateButton(
+                            text = "In 1 week",
+                            isSelected = false,
+                            onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(7) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            // Reminder Title Input
+            item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Reminder Title",
+                        text = "Reminder title",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontSize = 12.sp,
                         color = TextSecondary
                     )
                     OutlinedTextField(
@@ -451,13 +638,15 @@ private fun QuickReminderDialog(
                         textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                     )
                 }
+            }
 
-                // Note Input
+            // Note Input
+            item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "Note (optional)",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontSize = 12.sp,
                         color = TextSecondary
                     )
                     OutlinedTextField(
@@ -480,126 +669,71 @@ private fun QuickReminderDialog(
                         minLines = 3
                     )
                 }
-
-                // Due Date Display
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        text = "Set Due Date",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = TextSecondary
-                    )
-                    
-                    Surface(
-                        color = AlertOrange.copy(alpha = 0.1f),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = java.text.SimpleDateFormat("EEEE, dd MMM yyyy • hh:mm a", java.util.Locale.getDefault()).format(java.util.Date(dueAt)),
-                                color = AlertOrange,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                        }
-                    }
-
-                    // Quick Date Selection Buttons - Responsive Row with FlowRow-like behavior
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            QuickDateButton(
-                                text = "In 2 hours",
-                                isSelected = false,
-                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2) },
-                                modifier = Modifier.weight(1f)
-                            )
-                            QuickDateButton(
-                                text = "Tomorrow",
-                                isSelected = false,
-                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(1) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            QuickDateButton(
-                                text = "In 3 days",
-                                isSelected = false,
-                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(3) },
-                                modifier = Modifier.weight(1f)
-                            )
-                            QuickDateButton(
-                                text = "In 1 week",
-                                isSelected = false,
-                                onClick = { dueAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(7) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
             }
 
-            // Bottom Action Buttons
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = { onSave(reminderTitle, note.trim().ifBlank { null }, dueAt) },
-                    enabled = reminderTitle.trim().isNotBlank(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AlertOrange,
-                        contentColor = White,
-                        disabledContainerColor = Gray100,
-                        disabledContentColor = TextSecondary
-                    )
+            // Action buttons
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        text = "Save Reminder",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-                }
-                
-                OutlinedButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    border = ButtonDefaults.outlinedButtonBorder.copy(
-                        brush = androidx.compose.ui.graphics.SolidColor(Gray100)
-                    )
-                ) {
-                    Text(
-                        text = "Cancel",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = TextSecondary
-                    )
+                    Button(
+                        onClick = { onSave(reminderTitle, note.trim().ifBlank { null }, dueAt) },
+                        enabled = reminderTitle.trim().isNotBlank(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AlertOrange,
+                            contentColor = White,
+                            disabledContainerColor = Gray100,
+                            disabledContentColor = TextSecondary
+                        )
+                    ) {
+                        Text(
+                            text = "Save reminder",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        border = ButtonDefaults.outlinedButtonBorder.copy(
+                            brush = androidx.compose.ui.graphics.SolidColor(Gray100)
+                        )
+                    ) {
+                        Text(
+                            text = "Cancel",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = TextSecondary
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+private fun utcMidnightMillisForLocalDateFromEpochMillis(epochMillis: Long): Long {
+    val localDate = Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+    // DatePicker uses a UTC-millis representation for the selected day.
+    return localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+}
+
+private fun combineUtcDateMillisWithLocalTime(dateUtcMillis: Long, hour: Int, minute: Int): Long {
+    val selectedDate = Instant.ofEpochMilli(dateUtcMillis).atZone(ZoneOffset.UTC).toLocalDate()
+    return selectedDate
+        .atTime(hour.coerceIn(0, 23), minute.coerceIn(0, 59))
+        .atZone(ZoneId.systemDefault())
+        .toInstant()
+        .toEpochMilli()
 }
 
 @Composable

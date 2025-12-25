@@ -1,15 +1,22 @@
 package com.kiranaflow.app.ui.screens.home
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -52,11 +59,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.kiranaflow.app.util.Formatters
-import com.kiranaflow.app.util.BiometricAuth
 import androidx.compose.foundation.text.selection.SelectionContainer
 
+// Used for inline Profit & Loss info expansion UI.
+private enum class PnlInfoKey { REVENUE, COGS, EXPENSE }
+// P&L numbers privacy shutter: hidden by default, long-press to reveal/hide per card.
+private enum class PnlPrivacyKey { REVENUE, COGS, EXPENSE, PROFIT }
+
 @Composable
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 fun HomeScreen(
     modifier: Modifier = Modifier,
     viewModel: DashboardViewModel = viewModel(),
@@ -83,11 +94,12 @@ fun HomeScreen(
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
     val appPrefsStore = remember(context) { AppPrefsStore(context) }
     val appPrefs by appPrefsStore.prefs.collectAsState(initial = AppPrefs())
-    // Track whether numbers are revealed (tap to toggle)
-    var numbersRevealed by remember { mutableStateOf(false) }
+    var revealedPnlKeys by remember { mutableStateOf(setOf<PnlPrivacyKey>()) }
+    var expandedPnlInfo by remember { mutableStateOf<PnlInfoKey?>(null) }
     val clipboard = LocalClipboardManager.current
 
     data class ExpandedPnl(
+        val key: PnlPrivacyKey,
         val label: String,
         val amount: Double,
         val valueColor: Color,
@@ -97,30 +109,48 @@ fun HomeScreen(
 
     @Composable
     fun PnlCard(
+        privacyKey: PnlPrivacyKey,
         label: String,
         amount: Double,
         icon: androidx.compose.ui.graphics.vector.ImageVector,
         valueColor: Color,
         bg: Color,
         useAbsoluteAmount: Boolean = true,
+        showInfoIcon: Boolean = false,
+        onInfoClick: (() -> Unit)? = null,
         modifier: Modifier = Modifier
     ) {
+        val isRevealed = revealedPnlKeys.contains(privacyKey)
         Card(
             modifier = modifier
-                .height(86.dp)
-                .clickable {
-                    // Simple tap to toggle reveal, or open expanded view if already revealed
-                    if (!numbersRevealed) {
-                        numbersRevealed = true
-                    } else {
+                .height(100.dp)
+                .combinedClickable(
+                    onClick = {
+                        // Tap opens fullscreen ONLY if already revealed.
+                        if (isRevealed) {
                         expandedPnl = ExpandedPnl(
+                            key = privacyKey,
                             label = label,
                             amount = amount,
                             valueColor = valueColor,
                             useAbsoluteAmount = useAbsoluteAmount
                         )
+                        }
+                    },
+                    onLongClick = {
+                        // Long press toggles privacy shutter (reveal/hide).
+                        val willReveal = !isRevealed
+                        revealedPnlKeys = if (willReveal) {
+                            revealedPnlKeys + privacyKey
+                        } else {
+                            revealedPnlKeys - privacyKey
+                        }
+                        // If user hides the card while fullscreen is open for it, close fullscreen.
+                        if (!willReveal && expandedPnl?.key == privacyKey) {
+                            expandedPnl = null
+                        }
                     }
-                },
+                ),
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = bg),
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -140,10 +170,36 @@ fun HomeScreen(
                 }
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = label,
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (showInfoIcon && onInfoClick != null) {
+                            IconButton(
+                                onClick = onInfoClick,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Info",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     val raw = Formatters.formatInrCurrency(amount, fractionDigits = 0, useAbsolute = useAbsoluteAmount)
-                    val display = if (numbersRevealed) raw else Formatters.maskDigits(raw)
+                    val display = if (isRevealed) raw else Formatters.maskDigits(raw)
                     Text(
                         text = display,
                         color = valueColor,
@@ -153,6 +209,42 @@ fun HomeScreen(
                     )
                 }
             }
+        }
+    }
+
+    @Composable
+    fun EquationSymbolRow(symbol: String) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = symbol,
+                color = TextSecondary,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Black
+            )
+        }
+    }
+
+    @Composable
+    fun PnlInfoInlineCard(text: String) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = White),
+            shape = RoundedCornerShape(14.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+        ) {
+            Text(
+                text = text,
+                color = TextSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(12.dp)
+            )
         }
     }
 
@@ -224,7 +316,7 @@ fun HomeScreen(
                                 }
                             }
                             Text(
-                                text = "Tip: tap Revenue/Expense/Profit cards to expand.",
+                                text = "Tip: long-press to reveal. Tap to expand.",
                                 color = TextSecondary,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -243,17 +335,21 @@ fun HomeScreen(
             .verticalScroll(scrollState)
             .padding(bottom = 100.dp) // Space for BottomNav
     ) {
-        // Blue Header Section
-        Box(
+        // Header Section (match global header dimensions + rounded corners used across other screens)
+        Surface(
+            color = tabCapsuleColor("home"),
+            shape = RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp),
+            tonalElevation = 0.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .background(tabCapsuleColor("home"))
-                .padding(top = 48.dp, start = 20.dp, end = 16.dp, bottom = 24.dp)
+                .height(132.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = 18.dp, start = 16.dp, end = 16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
                 Column {
                     Text(
@@ -275,6 +371,7 @@ fun HomeScreen(
                         )
                     )
                 }
+
                 IconButton(
                     onClick = onSettingsClick,
                     modifier = Modifier
@@ -448,7 +545,9 @@ fun HomeScreen(
                 }
                 SalesTrendChart(
                     data = state.chartData,
-                    isPositiveTrend = state.netProfit >= 0
+                    // Chart color should follow the sales trend for the selected range,
+                    // not the all-time P&L number.
+                    isPositiveTrend = state.salesChangeIsUp
                 )
 
                 // Stock-style summary for the chart range
@@ -514,49 +613,99 @@ fun HomeScreen(
         )
         Spacer(modifier = Modifier.height(10.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             PnlCard(
+                privacyKey = PnlPrivacyKey.REVENUE,
                 label = "Revenue",
                 amount = state.revenue,
                 icon = Icons.Default.AccountBalance,
                 valueColor = Blue600,
                 bg = BgPrimary,
-                modifier = Modifier.weight(1f)
+                showInfoIcon = true,
+                onInfoClick = {
+                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.REVENUE) null else PnlInfoKey.REVENUE
+                },
+                modifier = Modifier.fillMaxWidth()
             )
-            Text(
-                text = "−",
-                color = TextSecondary,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Black
-            )
+            AnimatedVisibility(
+                visible = expandedPnlInfo == PnlInfoKey.REVENUE,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                PnlInfoInlineCard(
+                    text = "Revenue = money you earned.\n\nWe add up all Sales + Income transactions. We ignore customer/vendor “Payment …” entries so it doesn’t get counted twice."
+                )
+            }
+
+            EquationSymbolRow("−")
+
             PnlCard(
+                privacyKey = PnlPrivacyKey.COGS,
+                label = "Stock Cost (COGS)",
+                amount = state.cogs,
+                icon = Icons.Default.Inventory2,
+                valueColor = AlertOrange,
+                bg = BgPrimary,
+                showInfoIcon = true,
+                onInfoClick = {
+                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.COGS) null else PnlInfoKey.COGS
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            AnimatedVisibility(
+                visible = expandedPnlInfo == PnlInfoKey.COGS,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                PnlInfoInlineCard(
+                    text = "Stock Cost (COGS) = cost of items you sold.\n\nPackets/Pieces: cost price (per piece/packet) × pieces sold.\nLoose items: cost price per kg × kg sold.\n\nWeight is stored and calculated in kg across the app."
+                )
+            }
+
+            EquationSymbolRow("−")
+
+            PnlCard(
+                privacyKey = PnlPrivacyKey.EXPENSE,
                 label = "Expense",
                 amount = state.expense,
                 icon = Icons.Default.ArrowOutward,
                 valueColor = LossRed,
                 bg = BgPrimary,
-                modifier = Modifier.weight(1f)
+                showInfoIcon = true,
+                onInfoClick = {
+                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.EXPENSE) null else PnlInfoKey.EXPENSE
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            AnimatedVisibility(
+                visible = expandedPnlInfo == PnlInfoKey.EXPENSE,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                PnlInfoInlineCard(
+                    text = "Expense = money you spent to run the shop.\n\nWe add up all Expense transactions. We ignore customer/vendor “Payment …” entries so it doesn’t get counted twice."
+                )
+            }
+
+            EquationSymbolRow("=")
+
+            val isLoss = state.netProfit < 0
+            PnlCard(
+                privacyKey = PnlPrivacyKey.PROFIT,
+                label = if (isLoss) "Loss" else "Profit",
+                amount = state.netProfit,
+                icon = if (isLoss) Icons.Default.TrendingDown else Icons.Default.TrendingUp,
+                valueColor = if (isLoss) LossRed else ProfitGreen,
+                bg = BgPrimary,
+                useAbsoluteAmount = false,
+                modifier = Modifier.fillMaxWidth()
             )
         }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        val isLoss = state.netProfit < 0
-        PnlCard(
-            label = if (isLoss) "Loss" else "Profit",
-            amount = state.netProfit,
-            icon = if (isLoss) Icons.Default.TrendingDown else Icons.Default.TrendingUp,
-            valueColor = if (isLoss) LossRed else ProfitGreen,
-            bg = BgPrimary,
-            useAbsoluteAmount = false,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-        )
 
         Spacer(modifier = Modifier.height(24.dp))
         

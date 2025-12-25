@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -29,8 +30,6 @@ import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.theme.*
 import com.kiranaflow.app.util.InputFilters
 import com.kiranaflow.app.util.QrCodeUtil
-import com.kiranaflow.app.util.WhatsAppHelper
-import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.launch
 
 /**
@@ -38,16 +37,11 @@ import kotlinx.coroutines.launch
  */
 data class BillItemData(
     val name: String,
-    val qty: Int,
+    val qty: Double,
     val isLoose: Boolean,
     val unitPrice: Double,
     val lineTotal: Double
 )
-
-private enum class PaymentModalScreen {
-    PAYMENT,
-    WHATSAPP_SHARE
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,6 +51,7 @@ fun CompletePaymentModal(
     selectedCustomerId: Int? = null,
     shopName: String,
     upiId: String,
+    upiPayeeName: String = "",
     receiptTemplate: String = "",
     billItems: List<BillItemData> = emptyList(),
     onDismiss: () -> Unit,
@@ -72,9 +67,6 @@ fun CompletePaymentModal(
     var addCustomerPhoneError by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    
-    // Screen state for WhatsApp share flow
-    var currentScreen by remember { mutableStateOf(PaymentModalScreen.PAYMENT) }
 
     val cfg = LocalConfiguration.current
     val density = LocalDensity.current
@@ -89,11 +81,11 @@ fun CompletePaymentModal(
     }
 
     val showUpiQr = selectedPaymentMethod == "UPI" && upiId.isNotBlank()
-    val upiLink = remember(showUpiQr, upiId, shopName, totalAmount) {
+    val upiLink = remember(showUpiQr, upiId, shopName, upiPayeeName, totalAmount) {
         if (!showUpiQr) null
-        else WhatsAppHelper.buildUpiLink(
+        else com.kiranaflow.app.util.WhatsAppHelper.buildUpiLink(
             upiId = upiId,
-            payeeName = shopName.ifBlank { "thisizbusiness" },
+            payeeName = upiPayeeName.ifBlank { shopName }.ifBlank { "thisizbusiness" },
             amountInr = totalAmount.toInt().coerceAtLeast(1)
         )
     }
@@ -347,19 +339,9 @@ fun CompletePaymentModal(
 
                 // Mark Paid & Close Button
                 KiranaButton(
-                    text = "Mark Paid & Close",
+                    text = "Confirm Billing",
                     onClick = {
-                        // Check if customer is linked and has valid phone for WhatsApp share
-                        val customer = selectedCustomer
-                        val hasValidPhone = customer != null && customer.phone.length >= 10
-                        
-                        if (hasValidPhone && billItems.isNotEmpty()) {
-                            // Show WhatsApp share screen
-                            currentScreen = PaymentModalScreen.WHATSAPP_SHARE
-                        } else {
-                            // No customer or no valid phone, just complete
-                            onComplete(selectedCustomer?.id, selectedPaymentMethod)
-                        }
+                        onComplete(selectedCustomer?.id, selectedPaymentMethod)
                     },
                     icon = Icons.Default.Check,
                     colors = ButtonDefaults.buttonColors(
@@ -370,187 +352,6 @@ fun CompletePaymentModal(
             }
         }
     }
-    }
-
-    // WhatsApp Share Confirmation Screen
-    if (currentScreen == PaymentModalScreen.WHATSAPP_SHARE && selectedCustomer != null) {
-        Dialog(
-            onDismissRequest = {
-                // Allow dismissing, but complete the transaction
-                onComplete(selectedCustomer?.id, selectedPaymentMethod)
-            },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth(0.96f)
-                        .heightIn(min = 280.dp, max = 500.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = BgPrimary)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        // Success icon
-                        Surface(
-                            shape = CircleShape,
-                            color = ProfitGreenBg,
-                            modifier = Modifier.size(72.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = ProfitGreen,
-                                    modifier = Modifier.size(40.dp)
-                                )
-                            }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(16.dp))
-                        
-                        Text(
-                            "Payment Recorded!",
-                            style = MaterialTheme.typography.headlineSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 22.sp
-                            ),
-                            color = TextPrimary
-                        )
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        
-                        Text(
-                            "₹${totalAmount.toInt()}",
-                            style = MaterialTheme.typography.displayMedium.copy(
-                                fontWeight = FontWeight.Black,
-                                fontSize = 36.sp
-                            ),
-                            color = ProfitGreen
-                        )
-                        
-                        Spacer(modifier = Modifier.height(24.dp))
-                        
-                        // Customer info
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = BgCard,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Person,
-                                    contentDescription = null,
-                                    tint = TextSecondary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        selectedCustomer?.name ?: "",
-                                        fontWeight = FontWeight.Bold,
-                                        color = TextPrimary
-                                    )
-                                    Text(
-                                        "+91 ${selectedCustomer?.phone ?: ""}",
-                                        fontSize = 14.sp,
-                                        color = TextSecondary
-                                    )
-                                }
-                            }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(24.dp))
-                        
-                        Text(
-                            "Send bill receipt on WhatsApp?",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = TextPrimary
-                        )
-                        
-                        Spacer(modifier = Modifier.height(20.dp))
-                        
-                        // WhatsApp send button
-                        Button(
-                            onClick = {
-                                val customer = selectedCustomer ?: return@Button
-                                val whatsappItems = billItems.map { item ->
-                                    WhatsAppHelper.BillItem(
-                                        name = item.name,
-                                        qty = item.qty,
-                                        isLoose = item.isLoose,
-                                        unitPrice = item.unitPrice,
-                                        lineTotal = item.lineTotal
-                                    )
-                                }
-                                val message = WhatsAppHelper.buildBillMessage(
-                                    items = whatsappItems,
-                                    totalAmount = totalAmount,
-                                    paymentMode = selectedPaymentMethod,
-                                    shopName = shopName,
-                                    customerName = customer.name,
-                                    upiId = upiId,
-                                    template = receiptTemplate
-                                )
-                                val phone = WhatsAppHelper.normalizeIndianPhone(customer.phone)
-                                WhatsAppHelper.openWhatsApp(context, phone, message)
-                                onComplete(selectedCustomer?.id, selectedPaymentMethod)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF25D366), // WhatsApp green
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Send,
-                                contentDescription = null,
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                "Send on WhatsApp",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                        }
-                        
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        // Skip button
-                        TextButton(
-                            onClick = {
-                                onComplete(selectedCustomer?.id, selectedPaymentMethod)
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                "Skip",
-                                color = TextSecondary,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 15.sp
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 
     if (showAddCustomerDialog) {

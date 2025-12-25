@@ -59,6 +59,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import com.kiranaflow.app.util.InputFilters
 import com.kiranaflow.app.util.WhatsAppHelper
+import com.kiranaflow.app.util.UpiIntentHelper
 import java.text.SimpleDateFormat
 import java.util.Date
 import android.Manifest
@@ -71,9 +72,18 @@ import com.kiranaflow.app.util.Formatters
 
 class PartiesViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = KiranaRepository(KiranaDatabase.getDatabase(application))
+    private val partyDao = KiranaDatabase.getDatabase(application).partyDao()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    // Event flow for party save results
+    sealed interface PartySaveEvent {
+        data class Success(val partyName: String, val isNew: Boolean) : PartySaveEvent
+        data class Failure(val message: String) : PartySaveEvent
+    }
+    private val _partySaveEvents = MutableSharedFlow<PartySaveEvent>(extraBufferCapacity = 1)
+    val partySaveEvents: SharedFlow<PartySaveEvent> = _partySaveEvents.asSharedFlow()
     
     val customers: StateFlow<List<PartyEntity>> = repository.customers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -139,42 +149,84 @@ class PartiesViewModel(application: Application) : AndroidViewModel(application)
         .map { m -> m.mapNotNull { (k, v) -> v.firstOrNull()?.let { k to it } }.toMap() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
+    /**
+     * Returns true if party was added successfully, false if duplicate detected.
+     */
     fun addParty(
         name: String,
         phone: String,
         type: String,
         gstNumber: String? = null,
-        openingDue: Double = 0.0
+        openingDue: Double = 0.0,
+        upiId: String? = null
     ) {
         viewModelScope.launch {
+            val cleanPhone = normalizePhone(phone)
+            val cleanName = name.trim()
+            val typeLabel = if (type == "CUSTOMER") "customer" else "vendor"
+
+            // Check for duplicate by phone within same type
+            val existing = partyDao.findPartyByPhoneAndType(cleanPhone, type)
+            if (existing != null) {
+                _partySaveEvents.tryEmit(
+                    PartySaveEvent.Failure("A $typeLabel with phone \"$cleanPhone\" already exists (${existing.name})")
+                )
+                return@launch
+            }
+
             // ID is auto-generated (Int)
             val due = if (type == "CUSTOMER") openingDue.coerceAtLeast(0.0) else 0.0
             repository.addParty(
                 PartyEntity(
-                    name = name,
-                    phone = phone,
+                    name = cleanName,
+                    phone = cleanPhone,
                     type = type,
                     gstNumber = gstNumber?.trim()?.ifBlank { null },
+                    upiId = upiId?.trim()?.ifBlank { null },
                     balance = due,
                     openingDue = due
                 )
             )
+            _partySaveEvents.tryEmit(PartySaveEvent.Success(partyName = cleanName, isNew = true))
         }
+    }
+
+    private fun normalizePhone(phone: String): String {
+        val digits = phone.filter { it.isDigit() }
+        return if (digits.length > 10) digits.takeLast(10) else digits
     }
 
     fun setSearchQuery(q: String) {
         _searchQuery.value = q
     }
 
-    fun updateParty(party: PartyEntity, name: String, phone: String, gstNumber: String? = null) {
+    fun updateParty(party: PartyEntity, name: String, phone: String, gstNumber: String? = null, upiId: String? = null) {
         viewModelScope.launch {
+            val cleanPhone = normalizePhone(phone)
+            val cleanName = name.trim()
+            val typeLabel = if (party.type == "CUSTOMER") "customer" else "vendor"
+
+            // If phone number changed, check for conflicts with other parties
+            val normalizedOldPhone = normalizePhone(party.phone)
+            if (cleanPhone != normalizedOldPhone) {
+                val existing = partyDao.findPartyByPhoneAndType(cleanPhone, party.type)
+                if (existing != null && existing.id != party.id) {
+                    _partySaveEvents.tryEmit(
+                        PartySaveEvent.Failure("A $typeLabel with phone \"$cleanPhone\" already exists (${existing.name})")
+                    )
+                    return@launch
+                }
+            }
+
             repository.updateParty(
                 party.copy(
-                    name = name.trim(),
-                    phone = phone.trim(),
-                    gstNumber = gstNumber?.trim()?.ifBlank { null } ?: party.gstNumber
+                    name = cleanName,
+                    phone = cleanPhone,
+                    gstNumber = gstNumber?.trim()?.ifBlank { null } ?: party.gstNumber,
+                    upiId = upiId?.trim()?.ifBlank { null } ?: party.upiId
                 )
             )
+            _partySaveEvents.tryEmit(PartySaveEvent.Success(partyName = cleanName, isNew = false))
         }
     }
 
@@ -262,6 +314,7 @@ fun PartiesScreen(
     onOpenPayables: () -> Unit = {},
     onOpenReorder: () -> Unit = {},
     onOpenVendorDetail: (Int) -> Unit = {},
+    onOpenTransaction: (Int) -> Unit = {},
     viewModel: PartiesViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -321,34 +374,85 @@ fun PartiesScreen(
     var newName by remember { mutableStateOf("") }
     var newPhone by remember { mutableStateOf("") }
     var newGst by remember { mutableStateOf("") }
+    var newUpiId by remember { mutableStateOf("") }
     var newOpeningDue by remember { mutableStateOf("") }
+    var partyErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    // Collect party save events for error feedback
+    LaunchedEffect(Unit) {
+        viewModel.partySaveEvents.collect { event ->
+            when (event) {
+                is PartiesViewModel.PartySaveEvent.Success -> {
+                    partyErrorMessage = null
+                    showAddModal = false
+                    editingParty = null
+                    newName = ""
+                    newPhone = ""
+                    newGst = ""
+                    newUpiId = ""
+                    newOpeningDue = ""
+                }
+                is PartiesViewModel.PartySaveEvent.Failure -> {
+                    partyErrorMessage = event.message
+                }
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(GrayBg)) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            val title = if (type == "CUSTOMER") "Customer Khata" else "Expenses"
-            val subtitle = if (type == "CUSTOMER") "Manage udhaar & payments" else "Track purchases & expenses"
-            val tabId = if (type == "CUSTOMER") "customers" else "vendors"
-            val accent = tabCapsuleColor(tabId)
-            SolidTopBar(
-                title = title,
-                subtitle = subtitle,
-                onSettings = onOpenSettings,
-                containerColor = accent
-            )
+        val title = if (type == "CUSTOMER") "Customer Khata" else "Expenses"
+        val subtitle = if (type == "CUSTOMER") "Manage udhaar & payments" else "Track purchases & expenses"
+        val tabId = if (type == "CUSTOMER") "customers" else "vendors"
+        val accent = tabCapsuleColor(tabId)
 
-            // Use single LazyColumn for entire content to support landscape scrolling
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                contentPadding = PaddingValues(top = 18.dp, bottom = 100.dp)
-            ) {
+        // Use single LazyColumn for entire content (header scrolls away like Home).
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 100.dp)
+        ) {
+            item {
+                SolidTopBar(
+                    title = title,
+                    subtitle = subtitle,
+                    onSettings = onOpenSettings,
+                    containerColor = accent,
+                    actions = { colors ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconCircleButton(
+                                icon = Icons.Default.Add,
+                                contentDescription = if (type == "CUSTOMER") "Add customer" else "Add vendor",
+                                onClick = {
+                                    // Ensure we open in "add" mode, not edit.
+                                    editingParty = null
+                                    showAddModal = true
+                                },
+                                containerColor = colors.containerColor,
+                                contentColor = colors.contentColor,
+                                borderColor = colors.borderColor
+                            )
+                            SettingsIconButton(
+                                onClick = onOpenSettings,
+                                containerColor = colors.containerColor,
+                                contentColor = colors.contentColor,
+                                borderColor = colors.borderColor
+                            )
+                        }
+                    }
+                )
+            }
+            item { Spacer(modifier = Modifier.height(18.dp)) }
+
                 // Stats Card and controls as header items
                 if (type == "CUSTOMER") {
                     val totalDue = list.filter { it.balance > 0 }.sumOf { it.balance }
                     
                     item {
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                             colors = CardDefaults.cardColors(containerColor = KiranaGreen),
                             shape = RoundedCornerShape(24.dp)
                         ) {
@@ -372,13 +476,13 @@ fun PartiesScreen(
                             onValueChange = viewModel::setSearchQuery,
                             placeholder = "Search customers...",
                             icon = Icons.Default.Search,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
                         )
                     }
 
                     item {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             OutlinedButton(
@@ -403,7 +507,7 @@ fun PartiesScreen(
                     // Bulk selection controls
                     item {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -435,7 +539,10 @@ fun PartiesScreen(
                     val itemsToReorder = lowStockItems.size
 
                     item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+                        ) {
                             Card(
                                 modifier = Modifier.weight(1f).clickable { onOpenPayables() },
                                 shape = RoundedCornerShape(16.dp),
@@ -473,14 +580,14 @@ fun PartiesScreen(
                             onValueChange = viewModel::setSearchQuery,
                             placeholder = "Search vendors...",
                             icon = Icons.Default.Search,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
                         )
                     }
 
                     // Bulk selection controls
                     item {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -517,7 +624,7 @@ fun PartiesScreen(
                     }
                     if (type == "CUSTOMER") {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (selectionMode) {
@@ -553,7 +660,8 @@ fun PartiesScreen(
                                             customerName = c.name,
                                             dueAmountInr = amount,
                                             shopName = shopSettings.shopName,
-                                            upiId = shopSettings.upiId
+                                            upiId = shopSettings.upiId,
+                                            upiPayeeName = shopSettings.upiPayeeName
                                         )
                                         WhatsAppHelper.openWhatsApp(context, phone, msg)
                                     },
@@ -565,7 +673,7 @@ fun PartiesScreen(
                         }
                     } else {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (selectionMode) {
@@ -601,16 +709,7 @@ fun PartiesScreen(
                     }
                 }
             }
-        }
 
-        // Bottom-right Add button (above bottom menu bar)
-        AddFab(
-            onClick = { showAddModal = true },
-            containerColor = tabCapsuleColor(if (type == "CUSTOMER") "customers" else "vendors"),
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 24.dp, bottom = 112.dp)
-        )
     }
 
     // Customer detail: use the same bottom-sheet interaction as Vendor (swipe-down to dismiss).
@@ -620,10 +719,12 @@ fun PartiesScreen(
             CustomerDetailSheet(
                 customer = c,
                 transactions = customerTxById[c.id].orEmpty(),
+                transactionItemsByTxId = txItemsByTxId,
                 onDismiss = { customerDetailPartyId = null },
                 onSavePayment = { amount, method ->
                     viewModel.recordCustomerPayment(c, amount, method)
-                }
+                },
+                onOpenTransaction = onOpenTransaction
             )
         }
     }
@@ -635,10 +736,21 @@ fun PartiesScreen(
             VendorDetailSheet(
                 vendor = v,
                 transactions = vendorTxById[v.id].orEmpty(),
+                transactionItemsByTxId = txItemsByTxId,
                 onDismiss = { vendorDetailPartyId = null },
                 onSavePayment = { amount, method ->
                     viewModel.recordVendorPayment(v, amount, method)
-                }
+                },
+                onUpdateUpiId = { newUpi ->
+                    viewModel.updateParty(
+                        v,
+                        name = v.name,
+                        phone = v.phone,
+                        gstNumber = v.gstNumber,
+                        upiId = newUpi
+                    )
+                },
+                onOpenTransaction = onOpenTransaction
             )
         }
     }
@@ -815,7 +927,10 @@ fun PartiesScreen(
     if (showAddModal) {
         var addPhoneError by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { showAddModal = false },
+            onDismissRequest = { 
+                showAddModal = false
+                partyErrorMessage = null 
+            },
             title = { Text(if (type == "CUSTOMER") "Add Customer" else "Add Vendor", fontWeight = FontWeight.Bold) },
             text = {
                 Column(
@@ -828,14 +943,14 @@ fun PartiesScreen(
                 ) {
                     OutlinedTextField(
                         value = newName,
-                        onValueChange = { newName = it },
+                        onValueChange = { newName = it; partyErrorMessage = null },
                         label = { Text("Name") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = newPhone,
-                        onValueChange = { newPhone = InputFilters.digitsOnly(it, maxLen = 10) },
+                        onValueChange = { newPhone = InputFilters.digitsOnly(it, maxLen = 10); partyErrorMessage = null },
                         label = { Text("Phone") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -849,11 +964,27 @@ fun PartiesScreen(
                             fontWeight = FontWeight.SemiBold
                         )
                     }
+                    if (partyErrorMessage != null) {
+                        Text(
+                            text = partyErrorMessage!!,
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     if (type != "CUSTOMER") {
                         OutlinedTextField(
                             value = newGst,
                             onValueChange = { newGst = it },
                             label = { Text("GST Number (optional)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = newUpiId,
+                            onValueChange = { newUpiId = it },
+                            label = { Text("UPI ID (optional)") },
+                            placeholder = { Text("e.g. vendor@upi") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -883,18 +1014,18 @@ fun PartiesScreen(
                             phone = newPhone,
                             type = type,
                             gstNumber = if (type == "CUSTOMER") null else newGst,
-                            openingDue = openingDue
+                            openingDue = openingDue,
+                            upiId = if (type == "CUSTOMER") null else newUpiId
                         )
-                        newName = ""
-                        newPhone = ""
-                        newGst = ""
-                        newOpeningDue = ""
-                        showAddModal = false
+                        // Don't close modal here - wait for success event
                     }
                 ) { Text("Add") }
             },
             dismissButton = {
-                TextButton(onClick = { showAddModal = false }) { Text("Cancel") }
+                TextButton(onClick = { 
+                    showAddModal = false
+                    partyErrorMessage = null 
+                }) { Text("Cancel") }
             }
         )
     }
@@ -904,9 +1035,13 @@ fun PartiesScreen(
         var name by remember(party.id) { mutableStateOf(party.name) }
         var phone by remember(party.id) { mutableStateOf(party.phone) }
         var gst by remember(party.id) { mutableStateOf(party.gstNumber.orEmpty()) }
+        var upiId by remember(party.id) { mutableStateOf(party.upiId.orEmpty()) }
         var editPhoneError by remember(party.id) { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { editingParty = null },
+            onDismissRequest = { 
+                editingParty = null
+                partyErrorMessage = null 
+            },
             title = { Text(if (type == "CUSTOMER") "Edit Customer" else "Edit Vendor", fontWeight = FontWeight.Bold) },
             text = {
                 Column(
@@ -917,10 +1052,10 @@ fun PartiesScreen(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = name, onValueChange = { name = it; partyErrorMessage = null }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(
                         value = phone,
-                        onValueChange = { phone = InputFilters.digitsOnly(it, maxLen = 10) },
+                        onValueChange = { phone = InputFilters.digitsOnly(it, maxLen = 10); partyErrorMessage = null },
                         label = { Text("Phone") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -934,8 +1069,24 @@ fun PartiesScreen(
                             fontWeight = FontWeight.SemiBold
                         )
                     }
+                    if (partyErrorMessage != null) {
+                        Text(
+                            text = partyErrorMessage!!,
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     if (type != "CUSTOMER") {
                         OutlinedTextField(value = gst, onValueChange = { gst = it }, label = { Text("GST Number (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(
+                            value = upiId,
+                            onValueChange = { upiId = it },
+                            label = { Text("UPI ID (optional)") },
+                            placeholder = { Text("e.g. vendor@upi") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             },
@@ -946,11 +1097,20 @@ fun PartiesScreen(
                         return@TextButton
                     }
                     editPhoneError = false
-                    viewModel.updateParty(party, name, phone, if (type == "CUSTOMER") null else gst)
-                    editingParty = null
+                    viewModel.updateParty(
+                        party,
+                        name,
+                        phone,
+                        if (type == "CUSTOMER") null else gst,
+                        if (type == "CUSTOMER") null else upiId
+                    )
+                    // Don't close modal here - wait for success event
                 }) { Text("Save") }
             },
-            dismissButton = { TextButton(onClick = { editingParty = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { 
+                editingParty = null
+                partyErrorMessage = null 
+            }) { Text("Cancel") } }
         )
     }
 
@@ -1018,8 +1178,23 @@ fun PartiesScreen(
                 TextButton(onClick = {
                     val amt = amountText.toDoubleOrNull() ?: 0.0
                     if (amt > 0) {
-                        if (type == "CUSTOMER") viewModel.recordCustomerPayment(customer, amt, mode)
-                        else viewModel.recordVendorPayment(customer, amt, mode)
+                        if (type == "CUSTOMER") {
+                            viewModel.recordCustomerPayment(customer, amt, mode)
+                        } else {
+                            // Best-effort redirect to UPI app when paying vendor via UPI.
+                            if (mode == "UPI") {
+                                val vpa = customer.upiId?.trim().orEmpty()
+                                if (vpa.isNotBlank()) {
+                                    UpiIntentHelper.openUpiPay(
+                                        context = context,
+                                        vpa = vpa,
+                                        payeeName = customer.name,
+                                        amountInr = amt.toInt().coerceAtLeast(1)
+                                    )
+                                }
+                            }
+                            viewModel.recordVendorPayment(customer, amt, mode)
+                        }
                     }
                     payingParty = null
                 }) { Text("Save") }
@@ -1222,6 +1397,17 @@ fun PartiesScreen(
                 TextButton(onClick = {
                     val amt = amountText.toDoubleOrNull() ?: 0.0
                     if (amt > 0) {
+                        if (mode == "UPI") {
+                            val vpa = v.upiId?.trim().orEmpty()
+                            if (vpa.isNotBlank()) {
+                                UpiIntentHelper.openUpiPay(
+                                    context = context,
+                                    vpa = vpa,
+                                    payeeName = v.name,
+                                    amountInr = amt.toInt().coerceAtLeast(1)
+                                )
+                            }
+                        }
                         viewModel.recordVendorPurchaseDue(v, amt, mode, note)
                     }
                     recordDueParty = null

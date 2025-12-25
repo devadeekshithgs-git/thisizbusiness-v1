@@ -40,35 +40,42 @@ fun CustomersScreen(
     val accent = tabCapsuleColor("customers")
 
     Box(modifier = modifier.fillMaxSize().background(GrayBg)) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            SolidTopBar(
-                title = "Customer Khata",
-                subtitle = "Manage udhaar & payments",
-                onSettings = onOpenSettings,
-                containerColor = accent
-            )
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 100.dp)
+        ) {
+            // Header is part of the scroll (same interaction as Home screen)
+            item {
+                SolidTopBar(
+                    title = "Customer Khata",
+                    subtitle = "Manage udhaar & payments",
+                    onSettings = onOpenSettings,
+                    containerColor = accent
+                )
+            }
 
             if (state.customers.isEmpty() && !state.isLoading) {
-                EmptyState(
-                    title = "No Customers",
-                    message = "Add your first customer to get started",
-                    icon = {
-                        Icon(
-                            Icons.Default.People,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = TextSecondary
-                        )
-                    },
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)
-                )
+                item {
+                    EmptyState(
+                        title = "No Customers",
+                        message = "Add your first customer to get started",
+                        icon = {
+                            Icon(
+                                Icons.Default.People,
+                                contentDescription = null,
+                                modifier = Modifier.size(64.dp),
+                                tint = TextSecondary
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 24.dp)
+                    )
+                }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(top = 18.dp, bottom = 100.dp)
-                ) {
-                    item {
+                item {
+                    Box(modifier = Modifier.padding(horizontal = 24.dp)) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(24.dp),
@@ -115,8 +122,10 @@ fun CustomersScreen(
                             }
                         }
                     }
+                }
 
-                    item {
+                item {
+                    Box(modifier = Modifier.padding(horizontal = 24.dp)) {
                         SearchField(
                             query = state.searchQuery,
                             onQueryChange = { viewModel.search(it) },
@@ -124,8 +133,10 @@ fun CustomersScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
+                }
 
-                    items(state.customers) { customer ->
+                items(state.customers) { customer ->
+                    Box(modifier = Modifier.padding(horizontal = 24.dp)) {
                         CustomerCard(
                             customer = customer,
                             onClick = { selectedCustomerId = customer.id }

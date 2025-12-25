@@ -41,7 +41,7 @@ data class GstSaleLineRow(
     val itemNameSnapshot: String,
 
     @ColumnInfo(name = "qty")
-    val qty: Int,
+    val qty: Double,
 
     @ColumnInfo(name = "unit")
     val unit: String,
@@ -73,6 +73,8 @@ data class GstSaleLineRow(
     @ColumnInfo(name = "itemGstPercentage")
     val itemGstPercentage: Double?
 )
+
+
 
 
 

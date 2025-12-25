@@ -10,7 +10,26 @@ import android.util.Log
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-data class BoxCartItem(val item: ItemEntity, val qty: Int)
+data class BoxCartItem(val item: ItemEntity, val qty: Double)
+
+data class BillSavedEvent(
+    val txId: Int,
+    val customerId: Int?,
+    val paymentMode: String,
+    val totalAmount: Double,
+    val createdAtMillis: Long,
+    val items: List<BillSavedLineItem>
+)
+
+data class BillSavedLineItem(
+    val itemId: Int,
+    val name: String,
+    val qty: Double,
+    val isLoose: Boolean,
+    val unitPrice: Double,
+    val unitLabel: String,
+    val lineTotal: Double
+)
 
 sealed interface BillingScanResult {
     data class Added(val item: ItemEntity) : BillingScanResult
@@ -43,10 +62,9 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     // Keep searchResults as alias, add searchItems
     val searchItems: StateFlow<List<ItemEntity>> = searchResults
 
-    private fun lineTotal(item: ItemEntity, qty: Int): Double {
+    private fun lineTotal(item: ItemEntity, qty: Double): Double {
         return if (item.isLoose) {
-            val kg = qty / 1000.0
-            item.pricePerKg * kg
+            item.pricePerKg * qty
         } else {
             item.price * qty
         }
@@ -68,13 +86,13 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun addToCart(item: ItemEntity) {
-        addItemToBill(item, 1)
+        addItemToBill(item, 1.0)
     }
     
-    fun addItemToBill(item: ItemEntity, quantity: Int = 1) {
+    fun addItemToBill(item: ItemEntity, quantity: Double = 1.0) {
         val currentList = _billItems.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.item.id == item.id }
-        val effectiveQty = if (item.isLoose && quantity == 1) 250 else quantity // default 250g
+        val effectiveQty = if (item.isLoose && quantity == 1.0) 0.25 else quantity // default 0.25kg
         if (existingIndex != -1) {
             val existing = currentList[existingIndex]
             currentList[existingIndex] = existing.copy(qty = existing.qty + effectiveQty)
@@ -85,11 +103,11 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
         _searchQuery.value = "" // clear search
     }
     
-    fun updateItemQuantity(itemId: Int, quantity: Int) {
+    fun updateItemQuantity(itemId: Int, quantity: Double) {
         val currentList = _billItems.value.toMutableList()
         val index = currentList.indexOfFirst { it.item.id == itemId }
         if (index != -1) {
-            if (quantity <= 0) {
+            if (quantity <= 0.0) {
                 currentList.removeAt(index)
             } else {
                 val existing = currentList[index]
@@ -135,11 +153,35 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     
     fun completeBill(paymentMode: String, customerId: Int? = null) {
         viewModelScope.launch {
-            val items = _billItems.value.map { it.item to it.qty }
-            val total = _billItems.value.sumOf { lineTotal(it.item, it.qty) }
-            repository.processSale(items, paymentMode, customerId, total)
+            val now = System.currentTimeMillis()
+            val cartSnapshot = _billItems.value
+            val items = cartSnapshot.map { it.item to it.qty }
+            val total = cartSnapshot.sumOf { lineTotal(it.item, it.qty) }
+            val txId = repository.processSale(items, paymentMode, customerId, total)
+
+            val receiptItems = cartSnapshot.map { (item, qty) ->
+                val unitPrice = if (item.isLoose) item.pricePerKg else item.price
+                BillSavedLineItem(
+                    itemId = item.id,
+                    name = item.name,
+                    qty = qty,
+                    isLoose = item.isLoose,
+                    unitPrice = unitPrice,
+                    unitLabel = if (item.isLoose) "KG" else "PCS",
+                    lineTotal = lineTotal(item, qty)
+                )
+            }
             _billItems.value = emptyList()
-            _billSavedEvents.tryEmit(Unit)
+            _billSavedEvents.tryEmit(
+                BillSavedEvent(
+                    txId = txId,
+                    customerId = customerId,
+                    paymentMode = paymentMode,
+                    totalAmount = total,
+                    createdAtMillis = now,
+                    items = receiptItems
+                )
+            )
         }
     }
 
@@ -154,7 +196,7 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
                 ?: db.itemDao().getItemByBarcode(raw.replace(" ", ""))
 
             if (found != null) {
-                addItemToBill(found, 1)
+                addItemToBill(found, 1.0)
                 _scanResults.tryEmit(BillingScanResult.Added(found))
             } else {
                 Log.w("BillingViewModel", "Barcode not found in DB: '$raw'")
@@ -166,16 +208,16 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     private val _scanResults = MutableSharedFlow<BillingScanResult>(extraBufferCapacity = 8)
     val scanResults: SharedFlow<BillingScanResult> = _scanResults.asSharedFlow()
 
-    private val _billSavedEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val billSavedEvents: SharedFlow<Unit> = _billSavedEvents.asSharedFlow()
+    private val _billSavedEvents = MutableSharedFlow<BillSavedEvent>(extraBufferCapacity = 1)
+    val billSavedEvents: SharedFlow<BillSavedEvent> = _billSavedEvents.asSharedFlow()
 
-    fun updateQty(itemId: Int, delta: Int) {
+    fun updateQty(itemId: Int, delta: Double) {
         val currentList = _billItems.value.toMutableList()
         val index = currentList.indexOfFirst { it.item.id == itemId }
         if (index != -1) {
             val existing = currentList[index]
             val newQty = existing.qty + delta
-            if (newQty <= 0) {
+            if (newQty <= 0.0) {
                 currentList.removeAt(index)
             } else {
                 currentList[index] = existing.copy(qty = newQty)

@@ -36,10 +36,12 @@ object WhatsAppHelper {
         customerName: String,
         dueAmountInr: Int,
         shopName: String,
-        upiId: String
+        upiId: String,
+        upiPayeeName: String = ""
     ): String {
         val shop = shopName.ifBlank { "Kirana Store" }
-        val upiLink = buildUpiLink(upiId = upiId, payeeName = shop, amountInr = dueAmountInr).orEmpty()
+        val payee = upiPayeeName.ifBlank { shop }
+        val upiLink = buildUpiLink(upiId = upiId, payeeName = payee, amountInr = dueAmountInr).orEmpty()
 
         if (template.isBlank()) {
             return buildString {
@@ -78,6 +80,48 @@ object WhatsAppHelper {
     }
 
     /**
+     * Send a PDF directly to the given WhatsApp DM (if WhatsApp is installed).
+     *
+     * Notes:
+     * - phoneWithCountryCode should be digits only, including country code (e.g. "9199xxxxxx").
+     * - WhatsApp uses the "jid" extra to open a specific chat.
+     */
+    fun sendPdfToWhatsAppDm(
+        context: Context,
+        phoneWithCountryCode: String,
+        pdfUri: Uri,
+        caption: String? = null,
+        chooserTitle: String = "Send bill"
+    ) {
+        val phone = phoneWithCountryCode.filter { it.isDigit() }
+        val jid = "$phone@s.whatsapp.net"
+
+        val waIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, pdfUri)
+            if (!caption.isNullOrBlank()) putExtra(Intent.EXTRA_TEXT, caption)
+            putExtra("jid", jid)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            setPackage("com.whatsapp")
+        }
+
+        // If WhatsApp isn't available, fall back to generic share chooser.
+        val canResolve = waIntent.resolveActivity(context.packageManager) != null
+        if (canResolve) {
+            context.startActivity(waIntent)
+            return
+        }
+
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, pdfUri)
+            if (!caption.isNullOrBlank()) putExtra(Intent.EXTRA_TEXT, caption)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(share, chooserTitle))
+    }
+
+    /**
      * Build a text-based bill receipt message to send via WhatsApp.
      * @param items List of (itemName, qty, isLoose, unit price, line total)
      * @param totalAmount Total bill amount
@@ -97,6 +141,7 @@ object WhatsAppHelper {
         shopName: String,
         customerName: String,
         upiId: String = "",
+        upiPayeeName: String = "",
         template: String = ""
     ): String {
         val shop = shopName.ifBlank { "thisizbusiness" }
@@ -109,22 +154,22 @@ object WhatsAppHelper {
             else -> paymentMode
         }
 
+        val payee = upiPayeeName.ifBlank { shop }
         val upiLink = buildUpiLink(
             upiId = upiId,
-            payeeName = shop,
+            payeeName = payee,
             amountInr = totalAmount.toInt().coerceAtLeast(1)
         ).orEmpty()
 
         val itemsText = buildString {
-            items.forEach { item ->
+            items.forEachIndexed { idx, item ->
                 val qtyStr = if (item.isLoose) {
-                    val kg = item.qty / 1000.0
-                    val kgTxt = String.format("%.3f", kg).trimEnd('0').trimEnd('.')
+                    val kgTxt = String.format("%.3f", item.qty).trimEnd('0').trimEnd('.')
                     "${kgTxt}kg"
                 } else {
-                    "${item.qty} pcs"
+                    "${item.qty.toInt()} pcs"
                 }
-                append("• ${item.name}\n")
+                append("${idx + 1}. ${item.name}\n")
                 append("   $qtyStr × ₹${item.unitPrice.toInt()} = ₹${item.lineTotal.toInt()}\n")
             }
         }.trimEnd()
@@ -153,18 +198,13 @@ object WhatsAppHelper {
             append("*ITEMS:*\n")
             append("─────────────────\n")
             
-            items.forEach { item ->
+            items.forEachIndexed { idx, item ->
                 val qtyStr = if (item.isLoose) {
-                    if (item.qty >= 1000) {
-                        val kg = item.qty / 1000.0
-                        String.format("%.2f", kg).trimEnd('0').trimEnd('.') + "kg"
-                    } else {
-                        "${item.qty}g"
-                    }
+                    String.format("%.3f", item.qty).trimEnd('0').trimEnd('.') + "kg"
                 } else {
-                    "${item.qty} pcs"
+                    "${item.qty.toInt()} pcs"
                 }
-                append("• ${item.name}\n")
+                append("${idx + 1}. ${item.name}\n")
                 append("   $qtyStr × ₹${item.unitPrice.toInt()} = *₹${item.lineTotal.toInt()}*\n")
             }
             
@@ -187,6 +227,9 @@ object WhatsAppHelper {
             if (upiId.isNotBlank()) {
                 append("\n💳 UPI ID: ${upiId.trim()}\n")
             }
+            if (upiLink.isNotBlank()) {
+                append("Pay through UPI app: $upiLink\n")
+            }
             
             append("\n_Thank you for shopping!_ 🙏\n")
             append("─────────────────\n")
@@ -196,7 +239,7 @@ object WhatsAppHelper {
 
     data class BillItem(
         val name: String,
-        val qty: Int,
+        val qty: Double,
         val isLoose: Boolean,
         val unitPrice: Double,
         val lineTotal: Double

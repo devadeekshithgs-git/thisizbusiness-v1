@@ -10,8 +10,12 @@ import kotlinx.coroutines.flow.map
 
 data class ShopSettings(
     val shopName: String = "",
+    // Optional public contact number shown on receipts.
+    val shopPhone: String = "",
     val ownerName: String = "",
     val upiId: String = "",
+    // Payee name shown inside UPI apps (pn=). If blank, we fall back to shopName.
+    val upiPayeeName: String = "",
     val whatsappReminderMessage: String = "",
     // WhatsApp receipt template for billing (editable in Settings).
     // If blank, the app falls back to a default receipt message.
@@ -28,8 +32,10 @@ private val Context.shopSettingsDataStore by preferencesDataStore(name = "shop_s
 class ShopSettingsStore(private val context: Context) {
     private object Keys {
         val shopName = stringPreferencesKey("shop_name")
+        val shopPhone = stringPreferencesKey("shop_phone")
         val ownerName = stringPreferencesKey("owner_name")
         val upiId = stringPreferencesKey("upi_id")
+        val upiPayeeName = stringPreferencesKey("upi_payee_name")
         val whatsappReminderMessage = stringPreferencesKey("whatsapp_reminder_message")
         val receiptTemplate = stringPreferencesKey("receipt_template")
         val gstin = stringPreferencesKey("gstin")
@@ -41,8 +47,10 @@ class ShopSettingsStore(private val context: Context) {
     val settings: Flow<ShopSettings> = context.shopSettingsDataStore.data.map { prefs ->
         ShopSettings(
             shopName = prefs[Keys.shopName].orEmpty(),
+            shopPhone = prefs[Keys.shopPhone].orEmpty(),
             ownerName = prefs[Keys.ownerName].orEmpty(),
             upiId = prefs[Keys.upiId].orEmpty(),
+            upiPayeeName = prefs[Keys.upiPayeeName].orEmpty(),
             whatsappReminderMessage = prefs[Keys.whatsappReminderMessage].orEmpty(),
             receiptTemplate = prefs[Keys.receiptTemplate].orEmpty(),
             gstin = prefs[Keys.gstin].orEmpty(),
@@ -52,11 +60,19 @@ class ShopSettingsStore(private val context: Context) {
         )
     }
 
-    suspend fun save(shopName: String, ownerName: String, upiId: String) {
+    suspend fun save(
+        shopName: String,
+        shopPhone: String,
+        ownerName: String,
+        upiId: String,
+        upiPayeeName: String = ""
+    ) {
         context.shopSettingsDataStore.edit { prefs ->
             prefs[Keys.shopName] = shopName.trim()
+            prefs[Keys.shopPhone] = shopPhone.trim()
             prefs[Keys.ownerName] = ownerName.trim()
             prefs[Keys.upiId] = upiId.trim()
+            prefs[Keys.upiPayeeName] = upiPayeeName.trim()
         }
     }
 

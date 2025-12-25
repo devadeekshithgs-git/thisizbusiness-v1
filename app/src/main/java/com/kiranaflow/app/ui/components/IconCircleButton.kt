@@ -6,41 +6,46 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.kiranaflow.app.ui.theme.BgPrimary
 import com.kiranaflow.app.ui.theme.Gray200
-import com.kiranaflow.app.ui.theme.White
+import com.kiranaflow.app.ui.theme.TextPrimary
 
 @Composable
-fun AddFab(
+fun IconCircleButton(
+    icon: ImageVector,
+    contentDescription: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    containerColor: Color,
-    contentColor: Color = White,
+    size: Dp = 44.dp,
+    containerColor: Color = BgPrimary,
+    contentColor: Color = TextPrimary,
+    borderColor: Color = Gray200,
 ) {
     Box(
         modifier = modifier
-            .size(56.dp)
-            .shadow(14.dp, CircleShape, spotColor = containerColor.copy(alpha = 0.35f))
+            .size(size)
             .clip(CircleShape)
             .background(containerColor)
-            .border(1.dp, Gray200, CircleShape)
-            .clickable(onClick = onClick),
+            .border(1.dp, borderColor, CircleShape)
+            .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Icon(Icons.Default.Add, contentDescription = null, tint = contentColor, modifier = Modifier.size(26.dp))
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = contentColor
+        )
     }
 }
-
-
 
 
 

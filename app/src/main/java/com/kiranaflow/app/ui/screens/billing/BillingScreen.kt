@@ -54,8 +54,7 @@ import com.kiranaflow.app.ui.components.SearchField
 import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
-import com.kiranaflow.app.ui.components.AddFab
-import com.kiranaflow.app.ui.components.SolidTopBar
+import com.kiranaflow.app.ui.components.ValleyTopBar
 import com.kiranaflow.app.ui.components.dialogs.CompletePaymentModal
 import com.kiranaflow.app.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
@@ -68,7 +67,40 @@ import java.util.Locale
 import java.io.File
 import com.kiranaflow.app.util.InputFilters
 import androidx.compose.ui.text.input.KeyboardType
-import kotlin.math.roundToInt
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import com.kiranaflow.app.ui.screens.billing.BillSavedEvent
+import com.kiranaflow.app.ui.screens.billing.BillSavedLineItem
+import com.kiranaflow.app.util.ReceiptImageRenderer
+import com.kiranaflow.app.util.ReceiptRenderData
+import com.kiranaflow.app.util.ReceiptRenderItem
+
+// Save/restore scanner overlay state across configuration changes (e.g., landscape rotation).
+private val BillingScanOverlayStateSaver = androidx.compose.runtime.saveable.Saver<BillingScanOverlayState, List<Any?>>(
+    save = { state ->
+        when (state) {
+            BillingScanOverlayState.Idle -> listOf("IDLE", null, null)
+            is BillingScanOverlayState.Added -> listOf("ADDED", state.itemId, state.name)
+            is BillingScanOverlayState.NotFound -> listOf("NOT_FOUND", null, state.barcode)
+        }
+    },
+    restore = { restored ->
+        val type = restored.getOrNull(0) as? String ?: return@Saver BillingScanOverlayState.Idle
+        when (type) {
+            "ADDED" -> {
+                val itemId = restored.getOrNull(1) as? Int ?: return@Saver BillingScanOverlayState.Idle
+                val name = restored.getOrNull(2) as? String ?: ""
+                BillingScanOverlayState.Added(itemId, name)
+            }
+            "NOT_FOUND" -> {
+                val barcode = restored.getOrNull(2) as? String ?: return@Saver BillingScanOverlayState.Idle
+                BillingScanOverlayState.NotFound(barcode)
+            }
+            else -> BillingScanOverlayState.Idle
+        }
+    }
+)
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,17 +131,32 @@ fun BillingScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     var showCheckoutDialog by remember { mutableStateOf(false) }
-    var showBillingScanner by remember { mutableStateOf(false) }
-    var scanOverlayState by remember { mutableStateOf<BillingScanOverlayState>(BillingScanOverlayState.Idle) }
+    // Must survive rotation; otherwise scanner overlay exits on landscape change.
+    var showBillingScanner by rememberSaveable { mutableStateOf(false) }
+    var scanOverlayState by rememberSaveable(stateSaver = BillingScanOverlayStateSaver) {
+        mutableStateOf<BillingScanOverlayState>(BillingScanOverlayState.Idle)
+    }
     var priceEditItem by remember { mutableStateOf<BoxCartItem?>(null) }
     var showPriceEditDialog by remember { mutableStateOf(false) }
     var showTxnSavedOverlay by remember { mutableStateOf(false) }
+    var pendingDigitalBillEvent by remember { mutableStateOf<BillSavedEvent?>(null) }
+    var showDigitalBillPrompt by remember { mutableStateOf(false) }
     var screenMode by rememberSaveable { mutableStateOf("BILL") } // BILL | EXPENSE
+    var showQuickAddProduct by remember { mutableStateOf(false) }
+    var quickAddName by remember { mutableStateOf("") }
+    var quickAddPrice by remember { mutableStateOf("") }
+    var quickAddStock by remember { mutableStateOf("") }
+    var quickAddNameError by remember { mutableStateOf(false) }
+    var quickAddErrorText by remember { mutableStateOf<String?>(null) }
 
-    // Loose items (sold by weight): store selected step size (grams) per item in cart.
-    val looseStepByItemId = remember { mutableStateMapOf<Int, Int>() }
+    // Loose items: step is in KG (e.g., 0.25kg) to match BillingViewModel qty units.
+    val looseStepByItemId = remember { mutableStateMapOf<Int, Double>() }
     var customWeightForItemId by remember { mutableStateOf<Int?>(null) }
     var customWeightText by remember { mutableStateOf("") }
+
+    // NavHost is already padded by Scaffold's bottomBar (see MainActivity). Keep only a small
+    // extra gap so the last item doesn't "kiss" the bottom edge above the menu bar.
+    val bottomNavSafeGap = 16.dp
 
     // Expense form state (A6)
     val vendors by repo.vendors.collectAsState(initial = emptyList())
@@ -278,11 +325,21 @@ fun BillingScreen(
 
     // Transaction saved confirmation (voice + brief overlay)
     LaunchedEffect(Unit) {
-        viewModel.billSavedEvents.collectLatest {
+        viewModel.billSavedEvents.collectLatest { evt ->
             showTxnSavedOverlay = true
             runCatching {
                 tts.language = Locale.getDefault()
                 tts.speak("Transaction saved", TextToSpeech.QUEUE_FLUSH, null, "txn_saved")
+            }
+            // Optional digital bill prompt (only when a customer with a valid phone is linked)
+            val cust = customers.firstOrNull { it.id == evt.customerId }
+            val hasPhone = cust != null && cust.phone.filter { ch -> ch.isDigit() }.length >= 10
+            if (evt.customerId != null && hasPhone) {
+                pendingDigitalBillEvent = evt
+                showDigitalBillPrompt = true
+            } else {
+                pendingDigitalBillEvent = null
+                showDigitalBillPrompt = false
             }
             delay(900)
             showTxnSavedOverlay = false
@@ -297,173 +354,165 @@ fun BillingScreen(
             else if (showBillingScanner) Modifier.graphicsLayer { alpha = 0.35f }
             else Modifier
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .then(contentFadeModifier)
-        ) {
-            SolidTopBar(
-                title = if (screenMode == "BILL") "New Bill" else "Record Expense",
-                subtitle = if (screenMode == "BILL") "Scan or search items" else "Track business spendings",
-                onSettings = onOpenSettings,
-                containerColor = tabCapsuleColor("bill")
-            )
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // Mode switch: Bill Customer vs Record Expense (A6)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { screenMode = "BILL" },
-                    modifier = Modifier.weight(1f).height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (screenMode == "BILL") KiranaGreenBg else BgPrimary,
-                        contentColor = if (screenMode == "BILL") KiranaGreen else TextPrimary
-                    ),
-                    border = null
+        if (screenMode == "BILL") {
+            Column(modifier = Modifier.fillMaxSize().then(contentFadeModifier)) {
+                val listState = rememberLazyListState()
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 12.dp)
                 ) {
-                    Text("Bill Customer", fontWeight = FontWeight.Bold)
-                }
-                Button(
-                    onClick = { screenMode = "EXPENSE" },
-                    modifier = Modifier.weight(1f).height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (screenMode == "EXPENSE") LossRed else LossRed.copy(alpha = 0.75f),
-                        contentColor = Color.White
-                    )
-                ) {
-                    Text("Record Expense", fontWeight = FontWeight.Bold)
-                }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
+                    item {
+                        ValleyTopBar(
+                            title = "New Bill",
+                            subtitle = "Scan or search items",
+                            actionIcon = Icons.Default.QrCodeScanner,
+                            onAction = {
+                                showBillingScanner = true
+                                scanOverlayState = BillingScanOverlayState.Idle
+                            },
+                            onSettings = onOpenSettings,
+                            containerColor = Color.Black,
+                            showCenterActionButton = false,
+                            showActionIcon = true,
+                            backgroundColor = GrayBg
+                        )
+                    }
+                    item { Spacer(modifier = Modifier.height(6.dp)) }
+                    item {
+                        // Mode switch: Bill Customer vs Record Expense
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { screenMode = "BILL" },
+                                modifier = Modifier.weight(1f).height(52.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = KiranaGreenBg,
+                                    contentColor = KiranaGreen
+                                ),
+                                border = null
+                            ) {
+                                Text("Bill Customer", fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { screenMode = "EXPENSE" },
+                                modifier = Modifier.weight(1f).height(52.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = LossRed.copy(alpha = 0.75f),
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text("Record Expense", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                    item {
+                        SearchField(
+                            query = searchQuery,
+                            onQueryChange = { viewModel.searchItems(it) },
+                            placeholder = "Search items manually...",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        )
+                    }
 
-            if (screenMode == "BILL") {
-                // Use LazyColumn for the entire bill content to support landscape scrolling
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    LazyColumn(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        contentPadding = PaddingValues(bottom = 16.dp)
-                    ) {
-                        // Search field as first item
+                    if (searchQuery.isNotEmpty()) {
                         item {
-                            SearchField(
-                                query = searchQuery,
-                                onQueryChange = { viewModel.searchItems(it) },
-                                placeholder = "Search items manually...",
+                            Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 16.dp)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                        }
-
-                        // Search Results Dropdown
-                        if (searchQuery.isNotEmpty()) {
-                            item {
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Column(modifier = Modifier.padding(8.dp)) {
-                                        if (searchResults.isEmpty()) {
+                                    .padding(horizontal = 16.dp),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    if (searchResults.isEmpty()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    quickAddName = searchQuery.trim()
+                                                    quickAddPrice = ""
+                                                    quickAddStock = ""
+                                                    quickAddNameError = false
+                                                    showQuickAddProduct = true
+                                                }
+                                                .padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = null, tint = KiranaGreen)
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Add \"$searchQuery\" as new product",
+                                                modifier = Modifier.weight(1f),
+                                                color = TextPrimary,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    } else {
+                                        searchResults.take(5).forEach { item ->
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .clickable {
-                                                        // Navigate to full add product screen in inventory
-                                                        val productName = searchQuery.trim()
-                                                        viewModel.onSearchChange("") // Clear search
-                                                        navController.navigate("inventory") { launchSingleTop = true; restoreState = true }
-                                                        navController.currentBackStackEntry?.savedStateHandle?.set("prefill_name", productName)
-                                                        navController.currentBackStackEntry?.savedStateHandle?.set("return_to", "bill")
-                                                    }
+                                                    .clickable { viewModel.addItemToBill(item, 1.0) }
                                                     .padding(12.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Icon(Icons.Default.Add, contentDescription = null, tint = KiranaGreen)
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(
-                                                    text = "Add \"$searchQuery\" as new product",
-                                                    modifier = Modifier.weight(1f),
-                                                    color = TextPrimary,
-                                                    fontWeight = FontWeight.SemiBold
-                                                )
-                                            }
-                                        } else {
-                                            searchResults.take(5).forEach { item ->
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .clickable {
-                                                            viewModel.addItemToBill(item, 1)
-                                                        }
-                                                        .padding(12.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
-                                                    val priceText =
-                                                        if (item.isLoose) "₹${item.pricePerKg.toInt()}/kg" else "₹${item.price.toInt()}"
-                                                    Text(priceText, fontWeight = FontWeight.Bold, color = TextPrimary)
-                                                }
+                                                Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
+                                                val priceText =
+                                                    if (item.isLoose) "₹${item.pricePerKg.toInt()}/kg" else "₹${item.price.toInt()}"
+                                                Text(priceText, fontWeight = FontWeight.Bold, color = TextPrimary)
                                             }
                                         }
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(8.dp))
                             }
                         }
+                    }
 
-                        // Cart List or Empty State
-                        if (billItems.isEmpty()) {
-                            item {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(32.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.Inventory2,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(64.dp),
-                                        tint = TextSecondary
-                                    )
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Text("Empty Cart", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text("Scan or search to start billing", color = TextSecondary, fontSize = 14.sp)
-                                }
+                    if (billItems.isEmpty()) {
+                        item {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Inventory2,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(64.dp),
+                                    tint = TextSecondary
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text("Empty Cart", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Scan or search to start billing", color = TextSecondary, fontSize = 14.sp)
                             }
-                        } else {
-                            items(billItems, key = { it.item.id }) { billItem ->
-                                val isLoose = billItem.item.isLoose
-                                if (isLoose) {
-                                    LaunchedEffect(billItem.item.id) {
-                                        if (looseStepByItemId[billItem.item.id] == null) {
-                                            looseStepByItemId[billItem.item.id] = 250
-                                        }
+                        }
+                    } else {
+                        items(billItems) { billItem ->
+                            val isLoose = billItem.item.isLoose
+                            if (isLoose) {
+                                LaunchedEffect(billItem.item.id) {
+                                    if (looseStepByItemId[billItem.item.id] == null) {
+                                        looseStepByItemId[billItem.item.id] = 0.25
                                     }
                                 }
-                                val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 250) else 1
-                                val subtotal =
-                                    if (isLoose) billItem.item.pricePerKg * (billItem.qty / 1000.0)
-                                    else billItem.item.price * billItem.qty
+                            }
+                            val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 0.25) else 1.0
+                            val subtotal =
+                                if (isLoose) billItem.item.pricePerKg * billItem.qty
+                                else billItem.item.price * billItem.qty
+                            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
                                 CartItemCard(
                                     itemName = billItem.item.name,
                                     rackLocation = billItem.item.rackLocation,
@@ -473,22 +522,19 @@ fun BillingScreen(
                                     pricePerKg = billItem.item.pricePerKg,
                                     unitPrice = billItem.item.price,
                                     subtotal = subtotal,
-                                    selectedStepGrams = step,
-                                    onSelectStepGrams = { grams ->
-                                        // Portion chips set BOTH the active +/- step and the quantity immediately.
-                                        // This ensures the subtotal updates instantly (requested behavior).
-                                        looseStepByItemId[billItem.item.id] = grams
-                                        viewModel.updateItemQuantity(billItem.item.id, grams)
+                                    selectedStepKg = step,
+                                    onSelectStepKg = { kg ->
+                                        looseStepByItemId[billItem.item.id] = kg
+                                        viewModel.updateItemQuantity(billItem.item.id, kg)
                                     },
                                     onCustomWeight = {
                                         customWeightForItemId = billItem.item.id
-                                        val kg = billItem.qty / 1000.0
-                                        customWeightText = String.format("%.3f", kg).trimEnd('0').trimEnd('.')
+                                        customWeightText = String.format("%.3f", billItem.qty).trimEnd('0').trimEnd('.')
                                     },
                                     onInc = { viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step) },
                                     onDec = {
                                         val newQty = billItem.qty - step
-                                        if (newQty > 0) viewModel.updateItemQuantity(billItem.item.id, newQty)
+                                        if (newQty > 0.0) viewModel.updateItemQuantity(billItem.item.id, newQty)
                                         else viewModel.removeItemFromBill(billItem.item.id)
                                     },
                                     onDelete = { viewModel.removeItemFromBill(billItem.item.id) },
@@ -497,28 +543,111 @@ fun BillingScreen(
                                         showPriceEditDialog = true
                                     }
                                 )
-                                Spacer(modifier = Modifier.height(12.dp).padding(horizontal = 16.dp))
                             }
                         }
                     }
-
-                    BillingCheckoutBar(
-                        enabled = billItems.isNotEmpty(),
-                        onCheckout = { showCheckoutDialog = true },
-                        modifier = Modifier.padding(16.dp)
-                    )
                 }
-            } else {
-                // EXPENSE MODE (A6)
+
+                // Fixed footer: always sits right above the bottom menu bar (no big gap).
+                if (billItems.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = bottomNavSafeGap),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = BgPrimary)
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("TOTAL", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
+                                Text("₹${totalAmount.toInt()}", fontSize = 28.sp, fontWeight = FontWeight.Black, color = TextPrimary)
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Button(
+                                onClick = { showCheckoutDialog = true },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ProfitGreen,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Icon(Icons.Default.Check, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Checkout", fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                        }
+                    }
+                } else {
+                    Spacer(modifier = Modifier.height(bottomNavSafeGap))
+                }
+            }
+        } else {
+            // EXPENSE MODE: keep it scrollable; header+mode switch are part of scroll.
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(contentFadeModifier)
+                    .verticalScroll(rememberScrollState())
+                    .imePadding(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ValleyTopBar(
+                    title = "Record Expense",
+                    subtitle = "Track business spendings",
+                    actionIcon = Icons.Default.QrCodeScanner,
+                    onAction = {},
+                    onSettings = onOpenSettings,
+                    containerColor = Color.Black,
+                    showCenterActionButton = false,
+                    showActionIcon = false,
+                    backgroundColor = GrayBg
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { screenMode = "BILL" },
+                        modifier = Modifier.weight(1f).height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = BgPrimary,
+                            contentColor = TextPrimary
+                        ),
+                        border = null
+                    ) {
+                        Text("Bill Customer", fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = { screenMode = "EXPENSE" },
+                        modifier = Modifier.weight(1f).height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = LossRed,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Record Expense", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                // Continue with the existing expense UI (unchanged below this point)
                 val scope = rememberCoroutineScope()
                 val selectedVendor = vendors.firstOrNull { it.id == selectedVendorId }
                 Column(
                     modifier = Modifier
-                        .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .imePadding()
-                        .verticalScroll(rememberScrollState()),
+                        .padding(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     KiranaInput(
@@ -864,52 +993,6 @@ fun BillingScreen(
                 }
             }
         }
-
-        // Bottom-right overlay (above bottom menu bar):
-        // - Add button on top
-        // - Total amount directly below it
-        if (screenMode == "BILL") {
-            Column(
-                modifier = contentFadeModifier
-                    .then(
-                        Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 24.dp, bottom = 112.dp)
-                    ),
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                AddFab(
-                    onClick = {
-                        showBillingScanner = true
-                        scanOverlayState = BillingScanOverlayState.Idle
-                    },
-                    containerColor = tabCapsuleColor("bill")
-                )
-
-                Surface(
-                    color = BgPrimary,
-                    shape = RoundedCornerShape(16.dp),
-                    tonalElevation = 8.dp
-                ) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                        Text(
-                            "TOTAL AMOUNT",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextSecondary,
-                            letterSpacing = 1.sp
-                        )
-                        Text(
-                            "₹${totalAmount.toInt()}",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Black,
-                            color = TextPrimary
-                        )
-                    }
-                }
-            }
-        }
     }
 
     // Billing scanner overlay (camera on top of blurred bill screen)
@@ -917,7 +1000,9 @@ fun BillingScreen(
         BillingScannerOverlay(
             overlayState = scanOverlayState,
             billItems = billItems,
-            onSetQty = { itemId, qty -> viewModel.updateItemQuantity(itemId, qty) },
+            onSetQty = { itemId, qty ->
+                viewModel.updateItemQuantity(itemId, qty)
+            },
             onDismiss = { 
                 showBillingScanner = false
                 scanOverlayState = BillingScanOverlayState.Idle
@@ -950,32 +1035,11 @@ fun BillingScreen(
 
     // Complete Payment Modal
     if (showCheckoutDialog && billItems.isNotEmpty()) {
-        // Map bill items to the format expected by the modal for WhatsApp sharing
-        val billItemDataList = remember(billItems) {
-            billItems.map { cartItem ->
-                val lineTotal = if (cartItem.item.isLoose) {
-                    cartItem.item.pricePerKg * (cartItem.qty / 1000.0)
-                } else {
-                    cartItem.item.price * cartItem.qty
-                }
-                val unitPrice = if (cartItem.item.isLoose) cartItem.item.pricePerKg else cartItem.item.price
-                com.kiranaflow.app.ui.components.dialogs.BillItemData(
-                    name = cartItem.item.name,
-                    qty = cartItem.qty,
-                    isLoose = cartItem.item.isLoose,
-                    unitPrice = unitPrice,
-                    lineTotal = lineTotal
-                )
-            }
-        }
-        
         CompletePaymentModal(
             totalAmount = totalAmount,
             customers = customers,
             shopName = shopSettings.shopName,
             upiId = shopSettings.upiId,
-            receiptTemplate = shopSettings.receiptTemplate,
-            billItems = billItemDataList,
             onDismiss = { showCheckoutDialog = false },
             onComplete = { customerId, paymentMethod ->
                 viewModel.completeBill(paymentMethod, customerId)
@@ -985,6 +1049,26 @@ fun BillingScreen(
             onAddCustomer = { name, phone10 ->
                 repo.addCustomer(name, phone10)
             }
+        )
+    }
+
+    // Digital bill prompt after successful confirmation.
+    if (showDigitalBillPrompt && pendingDigitalBillEvent != null) {
+        val evt = pendingDigitalBillEvent!!
+        val customer = customers.firstOrNull { it.id == evt.customerId }
+        val custName = customer?.name.orEmpty()
+        val custPhone = customer?.phone.orEmpty()
+        DigitalBillPromptDialog(
+            shopName = shopSettings.shopName,
+            shopPhone = shopSettings.shopPhone,
+            billNo = evt.txId.toString(),
+            customerName = custName,
+            customerPhone = custPhone,
+            createdAtMillis = evt.createdAtMillis,
+            paymentMode = evt.paymentMode,
+            items = evt.items,
+            totalAmount = evt.totalAmount,
+            onDismiss = { showDigitalBillPrompt = false; pendingDigitalBillEvent = null }
         )
     }
 
@@ -1050,6 +1134,100 @@ fun BillingScreen(
         )
     }
 
+    if (showQuickAddProduct) {
+        AlertDialog(
+            onDismissRequest = { showQuickAddProduct = false },
+            title = { Text("Add New Product", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = quickAddName,
+                        onValueChange = { quickAddName = it; if (quickAddNameError) quickAddNameError = false },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (quickAddNameError) {
+                        Text(
+                            text = quickAddErrorText ?: "Product name is required",
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    OutlinedTextField(
+                        value = quickAddPrice,
+                        onValueChange = { quickAddPrice = InputFilters.decimal(it) },
+                        label = { Text("Selling Price (₹)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                    )
+                    OutlinedTextField(
+                        value = quickAddStock,
+                        onValueChange = { quickAddStock = InputFilters.digitsOnly(it) },
+                        label = { Text("Stock") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                }
+            },
+            confirmButton = {
+                val scope = rememberCoroutineScope()
+                TextButton(onClick = {
+                    val name = quickAddName.trim()
+                    if (name.isBlank()) {
+                        quickAddNameError = true
+                        quickAddErrorText = "Product name is required"
+                        return@TextButton
+                    }
+                    quickAddNameError = false
+                    quickAddErrorText = null
+                    val price = quickAddPrice.toDoubleOrNull() ?: 0.0
+                    val stock = quickAddStock.toIntOrNull() ?: 0
+                    scope.launch {
+                        val result = repo.addItemReturning(
+                            ItemEntity(
+                                name = name,
+                                price = price,
+                                stock = stock,
+                                category = "General",
+                                rackLocation = null,
+                                marginPercentage = 0.0,
+                                barcode = null,
+                                costPrice = 0.0,
+                                gstPercentage = null,
+                                reorderPoint = 10,
+                                vendorId = null,
+                                imageUri = null,
+                                expiryDateMillis = null,
+                                isDeleted = false
+                            )
+                        )
+                        when (result) {
+                            is KiranaRepository.ItemAddResult.Success -> {
+                                viewModel.addItemToBill(result.item, 1.0)
+                                showQuickAddProduct = false
+                            }
+                            is KiranaRepository.ItemAddResult.DuplicateName -> {
+                                quickAddNameError = true
+                                quickAddErrorText = "Already exists: ${result.existingName}"
+                            }
+                            is KiranaRepository.ItemAddResult.DuplicateBarcode -> {
+                                quickAddNameError = true
+                                quickAddErrorText = "Barcode already used by: ${result.existingName}"
+                            }
+                        }
+                    }
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuickAddProduct = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (showTxnSavedOverlay) {
         Box(modifier = Modifier.fillMaxSize()) {
             // Soft scrim so it feels like a brief confirmation dialog (but auto-dismisses quickly).
@@ -1097,58 +1275,27 @@ fun BillingScreen(
                     KiranaInput(
                         value = customWeightText,
                         onValueChange = { customWeightText = InputFilters.decimal(it, maxDecimals = 3) },
-                        placeholder = "e.g. 1.25",
+                        placeholder = "e.g. 0.75",
                         label = "WEIGHT (kg)",
                         keyboardType = KeyboardType.Decimal
                     )
-                    Text("Example: 0.5 = 500g", color = TextSecondary, fontSize = 12.sp)
+                    Text("Tip: 0.5 = 500g", color = TextSecondary, fontSize = 12.sp)
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     val id = customWeightForItemId ?: return@TextButton
                     val kg = customWeightText.toDoubleOrNull() ?: 0.0
-                    val grams = (kg * 1000.0).roundToInt()
-                    if (grams > 0) {
+                    if (kg > 0.0) {
                         // Custom weight also becomes the active step going forward.
-                        looseStepByItemId[id] = grams
-                        viewModel.updateItemQuantity(id, grams)
+                        looseStepByItemId[id] = kg
+                        viewModel.updateItemQuantity(id, kg)
                     }
                     customWeightForItemId = null
                 }) { Text("Apply") }
             },
             dismissButton = { TextButton(onClick = { customWeightForItemId = null }) { Text("Cancel") } }
         )
-    }
-}
-
-@Composable
-private fun BillingCheckoutBar(
-    enabled: Boolean,
-    onCheckout: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = BgPrimary)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Button(
-                onClick = onCheckout,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = enabled,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (enabled) ProfitGreen else Gray300,
-                    contentColor = Color.White,
-                    disabledContentColor = Color.White.copy(alpha = 0.7f)
-                )
-            ) {
-                Icon(Icons.Default.Check, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Checkout", fontWeight = FontWeight.Bold, color = Color.White)
-            }
-        }
     }
 }
 
@@ -1159,25 +1306,135 @@ private sealed interface BillingScanOverlayState {
 }
 
 @Composable
+private fun DigitalBillPromptDialog(
+    shopName: String,
+    shopPhone: String,
+    billNo: String,
+    customerName: String,
+    customerPhone: String,
+    createdAtMillis: Long,
+    paymentMode: String,
+    items: List<BillSavedLineItem>,
+    totalAmount: Double,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val paymentLabel = if (paymentMode == "CREDIT") "PAY_LATER" else "PAID"
+    val normalizedPhone = customerPhone.filter { it.isDigit() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Send digital bill?", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = customerName.ifBlank { "Customer" } + (if (normalizedPhone.isNotBlank()) " • $normalizedPhone" else ""),
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = "A receipt image will be generated and shared.",
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val receiptData = ReceiptRenderData(
+                        shopName = shopName.ifBlank { "SHOP" },
+                        shopPhone = shopPhone.trim().ifBlank { null },
+                        billNo = billNo,
+                        customerName = customerName.trim().ifBlank { null },
+                        customerPhone = normalizedPhone.ifBlank { null },
+                        paymentLabel = paymentLabel,
+                        txTypeLabel = "Sales",
+                        createdAtMillis = createdAtMillis,
+                        items = items.map {
+                            ReceiptRenderItem(
+                                itemId = it.itemId,
+                                name = it.name,
+                                qty = it.qty,
+                                unitPrice = it.unitPrice,
+                                lineTotal = it.lineTotal
+                            )
+                        },
+                        totalAmount = totalAmount
+                    )
+                    val bmp = ReceiptImageRenderer.renderToBitmap(receiptData)
+                    val uri = ReceiptImageRenderer.savePngToCache(
+                        context = context,
+                        bitmap = bmp,
+                        fileName = "bill_${billNo}.png"
+                    )
+                    // Prefer WhatsApp if installed; otherwise fall back to chooser.
+                    runCatching {
+                        ReceiptImageRenderer.shareImage(
+                            context = context,
+                            imageUri = uri,
+                            chooserTitle = "Send bill",
+                            packageName = "com.whatsapp"
+                        )
+                    }.onFailure {
+                        ReceiptImageRenderer.shareImage(
+                            context = context,
+                            imageUri = uri,
+                            chooserTitle = "Send bill"
+                        )
+                    }
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ProfitGreen, contentColor = Color.White),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Default.Send, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Send", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Skip") }
+        }
+    )
+}
+
+@Composable
 private fun BillingScannerOverlay(
     overlayState: BillingScanOverlayState,
     billItems: List<BoxCartItem>,
-    onSetQty: (Int, Int) -> Unit,
+    onSetQty: (Int, Double) -> Unit,
     onDismiss: () -> Unit,
     onBarcodeScanned: (String) -> Unit,
     onAddToInventory: (String) -> Unit
 ) {
-    val qtyForScanned = when (overlayState) {
-        is BillingScanOverlayState.Added -> billItems.firstOrNull { it.item.id == overlayState.itemId }?.qty ?: 0
-        else -> 0
+    val scannedLine = when (overlayState) {
+        is BillingScanOverlayState.Added -> billItems.firstOrNull { it.item.id == overlayState.itemId }
+        else -> null
+    }
+    val scannedQty: Double = scannedLine?.qty ?: 0.0
+    val scannedIsLoose = scannedLine?.item?.isLoose == true
+    val qtyStep = if (scannedIsLoose) 0.25 else 1.0
+
+    fun formatQty(qty: Double): String {
+        return if (scannedIsLoose) {
+            val txt = String.format("%.3f", qty).trimEnd('0').trimEnd('.')
+            "${txt} kg"
+        } else {
+            qty.toInt().toString()
+        }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Transparent),
-        contentAlignment = Alignment.Center
+            .background(Color.Transparent)
     ) {
+        val isLandscape = maxWidth > maxHeight
+        val bottomBarHeight = if (isLandscape) 64.dp else 84.dp
+        val frameWidthFraction = if (isLandscape) 0.76f else 0.88f
+        val frameHeight = (maxHeight - bottomBarHeight - 140.dp).coerceAtLeast(if (isLandscape) 180.dp else 240.dp)
+
         // Fullscreen camera (bill screen stays visible behind via BillingScreen blur)
         ScannerScreen(
             isContinuous = true,
@@ -1188,11 +1445,50 @@ private fun BillingScannerOverlay(
             showViewfinder = false
         )
 
+        // Big centered scan frame; status overlay must match this size (wireframe behavior)
+        val frameModifier = Modifier
+            .align(Alignment.Center)
+            .fillMaxWidth(frameWidthFraction)
+            .height(frameHeight)
+            .clip(RoundedCornerShape(28.dp))
+            .border(2.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(28.dp))
+
+        Box(modifier = frameModifier) {
+            // Dim the camera slightly within the frame for readability
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.20f)))
+
+            when (overlayState) {
+                BillingScanOverlayState.Idle -> Unit
+                is BillingScanOverlayState.Added -> {
+                    FrameStatusOverlay(
+                        isSuccess = true,
+                        title = "Item Added!",
+                        subtitle = overlayState.name,
+                        qtyText = formatQty(scannedQty),
+                        onInc = { onSetQty(overlayState.itemId, scannedQty + qtyStep) },
+                        onDec = {
+                            val next = (scannedQty - qtyStep).coerceAtLeast(0.0)
+                            if (next > 0.0) onSetQty(overlayState.itemId, next)
+                        }
+                    )
+                }
+                is BillingScanOverlayState.NotFound -> {
+                    FrameStatusOverlay(
+                        isSuccess = false,
+                        title = "Not Found",
+                        subtitle = overlayState.barcode,
+                        primaryActionText = "Add now to inventory",
+                        onPrimaryAction = { onAddToInventory(overlayState.barcode) }
+                    )
+                }
+            }
+        }
+
         // "Bill ←" pill button: below scan frame, above bottom instruction bar
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 84.dp + 10.dp),
+                .padding(bottom = bottomBarHeight + 10.dp),
             color = Blue600,
             shape = RoundedCornerShape(999.dp)
         ) {
@@ -1218,51 +1514,13 @@ private fun BillingScannerOverlay(
             }
         }
 
-        // Big centered scan frame; status overlay must match this size (wireframe behavior)
-        val frameModifier = Modifier
-            .fillMaxWidth(0.88f)
-            .fillMaxHeight(0.62f)
-            .align(Alignment.Center)
-            .clip(RoundedCornerShape(28.dp))
-            .border(2.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(28.dp))
-
-        Box(modifier = frameModifier) {
-            // Dim the camera slightly within the frame for readability
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.20f)))
-
-            when (overlayState) {
-                BillingScanOverlayState.Idle -> Unit
-                is BillingScanOverlayState.Added -> {
-                    FrameStatusOverlay(
-                        isSuccess = true,
-                        title = "Item Added!",
-                        subtitle = overlayState.name,
-                        qty = qtyForScanned,
-                        onInc = { onSetQty(overlayState.itemId, qtyForScanned + 1) },
-                        onDec = {
-                            if (qtyForScanned > 1) onSetQty(overlayState.itemId, qtyForScanned - 1)
-                        }
-                    )
-                }
-                is BillingScanOverlayState.NotFound -> {
-                    FrameStatusOverlay(
-                        isSuccess = false,
-                        title = "Not Found",
-                        subtitle = overlayState.barcode,
-                        primaryActionText = "Add now to inventory",
-                        onPrimaryAction = { onAddToInventory(overlayState.barcode) }
-                    )
-                }
-            }
-        }
-
         // Bottom instruction bar (matches your screenshot)
         Surface(
             color = BgPrimary,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(84.dp)
+                .height(bottomBarHeight)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
@@ -1280,7 +1538,7 @@ private fun FrameStatusOverlay(
     isSuccess: Boolean,
     title: String,
     subtitle: String? = null,
-    qty: Int = 0,
+    qtyText: String = "",
     onInc: (() -> Unit)? = null,
     onDec: (() -> Unit)? = null,
     primaryActionText: String? = null,
@@ -1315,7 +1573,7 @@ private fun FrameStatusOverlay(
                 Text(subtitle, color = Color.White.copy(alpha = 0.9f), fontWeight = FontWeight.SemiBold)
             }
 
-            if (isSuccess && qty > 0 && onInc != null && onDec != null) {
+            if (isSuccess && onInc != null && onDec != null) {
                 Spacer(modifier = Modifier.height(18.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1326,7 +1584,7 @@ private fun FrameStatusOverlay(
                             Icon(Icons.Default.Remove, contentDescription = "Decrease", tint = Color.White)
                         }
                     }
-                    Text(qty.toString(), color = Color.White, fontWeight = FontWeight.Black, fontSize = 22.sp)
+                    Text(qtyText, color = Color.White, fontWeight = FontWeight.Black, fontSize = 22.sp)
                     Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.18f)) {
                         IconButton(onClick = onInc) {
                             Icon(Icons.Default.Add, contentDescription = "Increase", tint = Color.White)
@@ -1355,163 +1613,144 @@ fun CartItemCard(
     itemName: String,
     rackLocation: String?,
     imageUri: String?,
-    qty: Int,
+    qty: Double,
     isLoose: Boolean,
     pricePerKg: Double,
     unitPrice: Double,
     subtotal: Double,
-    selectedStepGrams: Int,
-    onSelectStepGrams: (Int) -> Unit,
+    selectedStepKg: Double,
+    onSelectStepKg: (Double) -> Unit,
     onCustomWeight: () -> Unit,
     onInc: () -> Unit,
     onDec: () -> Unit,
     onDelete: () -> Unit,
     onEditPrice: () -> Unit
 ) {
-    fun formatWeightShort(grams: Int): String {
-        if (grams <= 0) return "0g"
-        return if (grams >= 1000) {
-            val kg = grams / 1000.0
-            // Keep it short: 1kg, 1.25kg, etc.
-            val txt = if (kg % 1.0 == 0.0) kg.toInt().toString() else String.format("%.2f", kg).trimEnd('0').trimEnd('.')
-            "${txt}kg"
-        } else {
-            "${grams}g"
-        }
+    fun formatKgShort(kg: Double): String {
+        if (kg <= 0.0) return "0kg"
+        val txt = if (kg % 1.0 == 0.0) kg.toInt().toString()
+        else String.format("%.3f", kg).trimEnd('0').trimEnd('.')
+        return "${txt}kg"
     }
 
-    KiranaCard(borderColor = Color.Transparent) {
-        // Two-row layout for responsiveness:
-        // Row 1: main content + qty/subtotal
-        // Row 2 (loose only): portion chips on a full-width line to avoid overlap on small screens.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Delete (left) – prominent and easy to hit
-            Surface(
-                color = LossRedBg,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.size(40.dp)
-            ) {
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, null, tint = LossRed, modifier = Modifier.size(20.dp))
-                }
-            }
-            Spacer(modifier = Modifier.width(8.dp))
+    fun formatQtyShort(): String = if (isLoose) formatKgShort(qty) else qty.toInt().toString()
+    val lineTotalLabel = "₹${subtotal.toInt()}"
 
-            // Thumbnail
+    KiranaCard(borderColor = Color.Transparent) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Thumbnail (left)
             Box(
-                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(BgCard),
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Gray50),
                 contentAlignment = Alignment.Center
             ) {
                 if (!imageUri.isNullOrBlank()) {
                     AsyncImage(
                         model = imageUri,
                         contentDescription = itemName,
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp))
+                        modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Icon(Icons.Default.Inventory2, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(24.dp))
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // Name + unit/loc
-            Column(modifier = Modifier.weight(1f)) {
-                Text(itemName, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TextPrimary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val unitLabel = if (isLoose) "₹${pricePerKg.toInt()}/kg" else "₹${unitPrice.toInt()}"
-                    Text(
-                        unitLabel,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Black,
-                        color = TextPrimary,
-                        modifier = Modifier.clickable { onEditPrice() }
+                    Icon(
+                        Icons.Default.Inventory2,
+                        contentDescription = null,
+                        tint = Gray300,
+                        modifier = Modifier.size(26.dp)
                     )
-                    if (!rackLocation.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val locText = rackLocation.trim().removePrefix("Rack").trim().removePrefix(":").trim()
-                        Surface(
-                            color = Gray100,
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text(
-                                text = "LOC $locText",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = TextPrimary,
-                                maxLines = 1
-                            )
-                        }
-                    }
                 }
             }
 
-            // Qty + subtotal (right)
+            // Middle column: name on top, qty adjustment below (portrait-friendly)
             Column(
                 modifier = Modifier
-                    .padding(start = 10.dp)
-                    .widthIn(min = 96.dp),
-                horizontalAlignment = Alignment.End
+                    .weight(1f)
+                    .padding(top = 2.dp)
             ) {
-                Surface(
-                    color = Color(0xFFF1F3F6),
-                    shape = RoundedCornerShape(14.dp)
+                // Top line: name (price + delete are on the same line, to the right)
+                Text(
+                    itemName,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = TextPrimary,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Qty stepper pill (below name) + delete icon beside it
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        color = Color(0xFFF1F3F6),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        IconButton(onClick = onDec, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Remove, null, tint = TextPrimary, modifier = Modifier.size(18.dp))
-                        }
-                        Text(
-                            if (isLoose) formatWeightShort(qty) else qty.toString(),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            modifier = Modifier.width(if (isLoose) 56.dp else 28.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        IconButton(onClick = onInc, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Add, null, tint = TextPrimary, modifier = Modifier.size(18.dp))
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            IconButton(onClick = onDec, modifier = Modifier.size(28.dp)) {
+                                Icon(
+                                    Icons.Default.Remove,
+                                    contentDescription = "Decrease",
+                                    tint = TextPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Text(
+                                text = formatQtyShort(),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                modifier = Modifier
+                                    .widthIn(min = if (isLoose) 52.dp else 22.dp)
+                                    .clickable(enabled = isLoose) { if (isLoose) onCustomWeight() },
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                color = TextPrimary
+                            )
+                            IconButton(onClick = onInc, modifier = Modifier.size(28.dp)) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "Increase",
+                                    tint = TextPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    "₹${subtotal.toInt()}",
-                    fontWeight = FontWeight.Black,
-                    fontSize = 14.sp,
-                    color = TextPrimary,
-                    maxLines = 1
-                )
-            }
-        }
 
-        if (isLoose) {
-            Spacer(modifier = Modifier.height(12.dp))
-            val leftGutter = 40.dp + 8.dp + 48.dp + 12.dp
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = leftGutter)
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val options = listOf(250, 500, 1000, 2000)
-                options.forEach { g ->
-                    FilterChip(
-                        selected = selectedStepGrams == g,
-                        onClick = { onSelectStepGrams(g) },
-                        label = { Text(formatWeightShort(g), fontWeight = FontWeight.Bold) }
-                    )
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Remove", tint = Gray400)
+                    }
                 }
-                AssistChip(
-                    onClick = onCustomWeight,
-                    label = { Text("Custom", fontWeight = FontWeight.Bold) }
+            }
+
+            // Right: price (delete moved next to qty control)
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier.padding(top = 2.dp)
+            ) {
+                Text(
+                    text = lineTotalLabel,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 20.sp,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    modifier = Modifier.clickable(onClick = onEditPrice)
                 )
             }
         }

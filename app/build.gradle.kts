@@ -78,6 +78,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 dependencies {
 
     implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation(platform("androidx.compose:compose-bom:2023.08.00"))
@@ -128,6 +129,9 @@ dependencies {
 
     // Image loading (for product photos)
     implementation("io.coil-kt:coil-compose:2.5.0")
+
+    // Image crop/edit (product photo crop after camera/gallery)
+    implementation("com.github.yalantis:ucrop:2.2.8")
 
     // QR generation (UPI dynamic QR)
     implementation("com.google.zxing:core:3.5.3")

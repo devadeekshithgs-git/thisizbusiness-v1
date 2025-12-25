@@ -39,6 +39,7 @@ import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.util.StubSyncEngine
 import com.kiranaflow.app.util.LocalBackupManager
+import com.kiranaflow.app.util.InputFilters
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.window.Dialog
@@ -70,8 +71,10 @@ fun SettingsDrawer(
     var expandedBackup by remember { mutableStateOf(false) }
     var expandedDev by remember { mutableStateOf(false) }
     var shopName by remember { mutableStateOf("") }
+    var shopPhone by remember { mutableStateOf("") }
     var ownerName by remember { mutableStateOf("") }
     var upiId by remember { mutableStateOf("") }
+    var upiPayeeName by remember { mutableStateOf("") }
     var whatsappReminderMessage by remember { mutableStateOf("") }
     var receiptTemplate by remember { mutableStateOf("") }
     var gstin by remember { mutableStateOf("") }
@@ -90,7 +93,7 @@ fun SettingsDrawer(
             append("*TOTAL: ₹{total}*\n")
             append("Payment: {payment}\n")
             append("UPI: {upi_id}\n")
-            append("{upi_link}\n")
+            append("Pay through UPI app: {upi_link}\n")
             append("\nPowered by thisizbusiness")
         }
     }
@@ -151,8 +154,10 @@ fun SettingsDrawer(
     LaunchedEffect(isOpen, settings) {
         if (isOpen) {
             shopName = settings.shopName
+            shopPhone = settings.shopPhone
             ownerName = settings.ownerName
             upiId = settings.upiId
+            upiPayeeName = settings.upiPayeeName
             whatsappReminderMessage = settings.whatsappReminderMessage
             // Pre-fill with default so user can edit immediately.
             receiptTemplate = settings.receiptTemplate.ifBlank { defaultReceiptTemplate }
@@ -252,6 +257,14 @@ fun SettingsDrawer(
                                     Spacer(modifier = Modifier.height(12.dp))
 
                                     KiranaInput(
+                                        value = shopPhone,
+                                        onValueChange = { shopPhone = InputFilters.digitsOnly(it, maxLen = 15) },
+                                        placeholder = "e.g. 9986469000",
+                                        label = "SHOP PHONE (OPTIONAL)"
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+
+                                    KiranaInput(
                                         value = ownerName,
                                         onValueChange = { ownerName = it },
                                         placeholder = "e.g. Owner Ji",
@@ -277,6 +290,14 @@ fun SettingsDrawer(
                                         value = upiId,
                                         onValueChange = { upiId = it },
                                         placeholder = "e.g. 9876543210@upi"
+                                    )
+
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    KiranaInput(
+                                        value = upiPayeeName,
+                                        onValueChange = { upiPayeeName = it },
+                                        placeholder = "e.g. Bhanu Super Mart (as in bank)",
+                                        label = "UPI ACCOUNT NAME (PAYEE NAME)"
                                     )
 
                                     Spacer(modifier = Modifier.height(12.dp))
@@ -379,7 +400,7 @@ fun SettingsDrawer(
                                         text = "✓ Save Settings",
                                         onClick = {
                                             scope.launch {
-                                                store.save(shopName, ownerName, upiId)
+                                                store.save(shopName, shopPhone, ownerName, upiId, upiPayeeName)
                                                 store.saveWhatsAppReminderMessage(whatsappReminderMessage)
                                                 store.saveReceiptTemplate(receiptTemplate)
                                                 store.saveGstBusinessInfo(

@@ -2,6 +2,7 @@ package com.kiranaflow.app.ui.screens.inventory
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -12,19 +13,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,8 +43,13 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,25 +60,37 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import java.io.File
 import com.kiranaflow.app.data.local.ItemEntity
 import com.kiranaflow.app.data.local.PartyEntity
 import com.kiranaflow.app.data.local.KiranaDatabase
+import com.kiranaflow.app.data.local.CategoryHsnStore
 import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.ui.components.CircleButton
+import com.kiranaflow.app.ui.components.IconCircleButton
 import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
-import com.kiranaflow.app.ui.components.AddFab
 import com.kiranaflow.app.ui.components.SolidTopBar
+import com.kiranaflow.app.ui.components.SettingsIconButton
 import com.kiranaflow.app.ui.theme.*
 import com.kiranaflow.app.util.InputFilters
 import com.kiranaflow.app.util.OcrUtils
 import com.kiranaflow.app.util.BillExtractionPipeline
 import com.kiranaflow.app.util.BillOcrParser
 import com.kiranaflow.app.util.InventorySheetParser
+import com.kiranaflow.app.util.gst.GstValidator
 import androidx.compose.ui.text.input.KeyboardType
 import android.widget.Toast
+import android.app.Activity
+import android.net.Uri
+import android.graphics.Bitmap
+import com.yalantis.ucrop.UCrop
+import com.yalantis.ucrop.UCropActivity
 
 @Composable
 fun InventoryScreen(
@@ -81,8 +103,11 @@ fun InventoryScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
+    val categoryHsnStore = remember(context) { CategoryHsnStore(context) }
+    val categoryHsnDefaults by categoryHsnStore.defaults.collectAsState(initial = emptyMap())
     val items by viewModel.filteredItems.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val isSavingItem by viewModel.isSavingItem.collectAsState()
     // Important: Navigation to scanner disposes this destination; keep modal state across navigation.
     var showAddModal by rememberSaveable { mutableStateOf(false) }
     var editingItem by remember { mutableStateOf<ItemEntity?>(null) }
@@ -92,6 +117,28 @@ fun InventoryScreen(
     var showBillScanner by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
     var purchaseDraft by remember { mutableStateOf<PurchaseDraft?>(null) }
+
+    var saveEventToConfirm by remember { mutableStateOf<InventoryViewModel.ItemSaveEvent.Success?>(null) }
+    var saveErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.itemSaveEvents.collect { ev ->
+            when (ev) {
+                is InventoryViewModel.ItemSaveEvent.Success -> {
+                    saveEventToConfirm = ev
+                    saveErrorMessage = null
+                    // Close sheet only after DB write succeeded.
+                    showAddModal = false
+                    // Clear prefill_name so it doesn't retrigger
+                    navController.currentBackStackEntry?.savedStateHandle?.remove<String>("prefill_name")
+                    editingItem = null
+                }
+                is InventoryViewModel.ItemSaveEvent.Failure -> {
+                    saveErrorMessage = ev.message
+                }
+            }
+        }
+    }
 
     LaunchedEffect(triggerAddItem) {
         if (triggerAddItem) {
@@ -138,6 +185,54 @@ fun InventoryScreen(
         }
     }
 
+    // Confirmation dialog (added vs updated)
+    saveEventToConfirm?.let { ev ->
+        val isAdded = ev.mode == InventoryViewModel.ItemSaveMode.ADDED
+        AlertDialog(
+            onDismissRequest = { saveEventToConfirm = null },
+            title = {
+                Text(
+                    text = if (isAdded) "Product added" else "Changes saved",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (isAdded) {
+                        "'${ev.itemName}' has been added to your inventory."
+                    } else {
+                        "Updated details for '${ev.itemName}' have been saved."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        saveEventToConfirm = null
+                        if (returnToBilling) {
+                            Log.d("InventoryNav", "Save confirmed -> return to Billing")
+                            navController.currentBackStackEntry?.savedStateHandle?.remove<String>("return_to")
+                            val popped = navController.popBackStack("bill", false)
+                            if (!popped) {
+                                navController.navigate("bill") { launchSingleTop = true }
+                            }
+                        }
+                    }
+                ) { Text(if (returnToBilling) "Back to Billing" else "OK") }
+            }
+        )
+    }
+
+    // Save failure dialog (rare, but better UX than silent failure)
+    saveErrorMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { saveErrorMessage = null },
+            title = { Text("Could not save", fontWeight = FontWeight.Bold) },
+            text = { Text(msg) },
+            confirmButton = { TextButton(onClick = { saveErrorMessage = null }) { Text("OK") } }
+        )
+    }
+
     LaunchedEffect(scannedBarcodeValue) {
         if (!scannedBarcodeValue.isNullOrBlank()) {
             viewModel.onBarcodeScanned(scannedBarcodeValue)
@@ -159,35 +254,49 @@ fun InventoryScreen(
     val accent = tabCapsuleColor("inventory")
 
     Box(modifier = Modifier.fillMaxSize().background(GrayBg)) {
-        // Bottom-right Add button (above bottom menu bar)
-        AddFab(
-            onClick = {
-                editingItem = null
-                showAddModal = true
-            },
-            containerColor = accent,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 24.dp, bottom = 112.dp)
-                .zIndex(2f)
-        )
+        // Single LazyColumn where header is part of the scroll (same interaction as Home screen)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 100.dp)
+        ) {
+            item {
+                SolidTopBar(
+                    title = "Manage Inventory",
+                    subtitle = "Track stock & prices",
+                    onSettings = onOpenSettings,
+                    containerColor = accent,
+                    actions = { colors ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconCircleButton(
+                                icon = Icons.Default.Add,
+                                contentDescription = "Add item",
+                                onClick = {
+                                    editingItem = null
+                                    showAddModal = true
+                                },
+                                containerColor = colors.containerColor,
+                                contentColor = colors.contentColor,
+                                borderColor = colors.borderColor
+                            )
+                            SettingsIconButton(
+                                onClick = onOpenSettings,
+                                containerColor = colors.containerColor,
+                                contentColor = colors.contentColor,
+                                borderColor = colors.borderColor
+                            )
+                        }
+                    }
+                )
+            }
+            item { Spacer(modifier = Modifier.height(18.dp)) }
 
-        Column(modifier = Modifier.fillMaxSize()) {
-            SolidTopBar(
-                title = "Manage Inventory",
-                subtitle = "Track stock & prices",
-                onSettings = onOpenSettings,
-                containerColor = accent
-            )
-
-            // Use single LazyColumn for entire content to support landscape scrolling
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                contentPadding = PaddingValues(top = 18.dp, bottom = 100.dp)
-            ) {
-                // Search as first item
-                item {
+            // Search as first content item
+            item {
+                Box(modifier = Modifier.padding(horizontal = 24.dp)) {
                     KiranaInput(
                         value = searchQuery,
                         onValueChange = viewModel::onSearchChange,
@@ -196,9 +305,11 @@ fun InventoryScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+            }
 
-                // Selection controls
-                item {
+            // Selection controls
+            item {
+                Box(modifier = Modifier.padding(horizontal = 24.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -234,10 +345,12 @@ fun InventoryScreen(
                         }
                     }
                 }
+            }
 
-                // Inventory items list
-                items(items, key = { it.id }) { item ->
-                    val isSelected = selectedItemIds.contains(item.id)
+            // Inventory items list
+            items(items, key = { it.id }) { item ->
+                val isSelected = selectedItemIds.contains(item.id)
+                Box(modifier = Modifier.padding(horizontal = 24.dp)) {
                     InventoryItemCardSelectable(
                         item = item,
                         selectionMode = selectionMode,
@@ -259,6 +372,12 @@ fun InventoryScreen(
                         },
                         onAddReceivedStock = { qty ->
                             viewModel.addReceivedStock(item, qty)
+                        },
+                        onSetStock = { newStock ->
+                            viewModel.setStock(item, newStock)
+                        },
+                        onSetStockKg = { newKg ->
+                            viewModel.setStockKg(item, newKg)
                         }
                     )
                 }
@@ -282,7 +401,8 @@ fun InventoryScreen(
                         showAddModal = false
                     }
                 },
-                onSave = { name, cat, cost, sell, isLoose, pricePerKg, stockKg, stock, loc, barcode, gst, reorder, imageUri, vendorId, expiryMillis ->
+                onSave = { name, cat, cost, sell, isLoose, pricePerKg, stockKg, stock, loc, barcode, gst, hsn, reorder, imageUri, vendorId, expiryMillis, batchSize ->
+                    // Use editingItem if set, otherwise keep "edit mode" for scanned existing items.
                     val id = editingItem?.id
                     viewModel.saveItem(
                         id = id,
@@ -297,27 +417,13 @@ fun InventoryScreen(
                         location = loc,
                         barcode = barcode,
                         gst = gst,
+                        hsnCode = hsn,
                         reorder = reorder,
                         imageUri = imageUri,
                         vendorId = vendorId,
-                        expiryDateMillis = expiryMillis
+                        expiryDateMillis = expiryMillis,
+                        batchSize = batchSize
                     )
-                    runCatching {
-                        Toast.makeText(context, "Saved successfully", Toast.LENGTH_SHORT).show()
-                    }
-                    // Clear prefill_name so it doesn't retrigger
-                    navController.currentBackStackEntry?.savedStateHandle?.remove<String>("prefill_name")
-                    if (returnToBilling) {
-                        Log.d("InventoryNav", "Saved item from Billing flow -> return to Billing")
-                        navController.currentBackStackEntry?.savedStateHandle?.remove<String>("return_to")
-                        val popped = navController.popBackStack("bill", false)
-                        if (!popped) {
-                            navController.navigate("bill") { launchSingleTop = true }
-                        }
-                    } else {
-                        showAddModal = false
-                    }
-                    editingItem = null
                 },
                 onDelete = { itemToDelete ->
                     viewModel.deleteItem(itemToDelete)
@@ -341,7 +447,11 @@ fun InventoryScreen(
                 scannedBarcode = persistedBarcode ?: scannedBarcodeValue,
                 existingItem = editingItem ?: scannedItem,
                 onConsumeExistingItem = {
-                    if (editingItem != null) editingItem = null else viewModel.clearScannedItem()
+                    // Keep scanned existing item in "edit mode" so we don't lose the ID after we consume scannedItem.
+                    if (editingItem == null && scannedItem != null) {
+                        editingItem = scannedItem
+                    }
+                    viewModel.clearScannedItem()
                 },
                 offProduct = offProduct,
                 offLoading = offLoading,
@@ -352,7 +462,10 @@ fun InventoryScreen(
                 },
                 vendors = vendors,
                 onAddVendor = { name, phone, gst -> repo.addVendor(name, phone, gst) },
-                prefillName = prefillProductName
+                categoryHsnDefaults = categoryHsnDefaults,
+                onSaveCategoryHsnDefault = { cat, hsn -> categoryHsnStore.setDefault(cat, hsn) },
+                prefillName = prefillProductName,
+                saving = isSavingItem
             )
         }
     }
@@ -686,8 +799,11 @@ private fun InventoryItemCardSelectable(
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     onAdjustStock: (Int) -> Unit = {},
-    onAddReceivedStock: (Int) -> Unit = {}
+    onAddReceivedStock: (Int) -> Unit = {},
+    onSetStock: (Int) -> Unit = {},
+    onSetStockKg: (Double) -> Unit = {}
 ) {
+    var inlineEditingStock by remember(item.id) { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Top
@@ -707,9 +823,28 @@ private fun InventoryItemCardSelectable(
             selectionMode = selectionMode,
             onAdjustStock = onAdjustStock,
             onAddReceivedStock = onAddReceivedStock,
+            onSetStock = onSetStock,
+            onSetStockKg = onSetStockKg,
+            onInlineEditingStockChanged = { inlineEditingStock = it },
+            // In selection mode, quick controls are hidden, so it's safe for the whole card to be clickable.
+            // In normal mode, only the header area should open the full edit sheet so it doesn't steal taps/focus
+            // from inline stock editing.
+            onCardClick = if (!selectionMode) onClick else null,
+            onCardLongPress = if (!selectionMode) onLongPress else null,
             modifier = Modifier
                 .weight(1f)
-                .combinedClickable(onClick = onClick, onLongClick = onLongPress)
+                // While inline-editing stock, disable opening the full edit sheet; otherwise it steals taps/focus.
+                .then(
+                    if (selectionMode) {
+                        Modifier.combinedClickable(
+                            enabled = !inlineEditingStock,
+                            onClick = onClick,
+                            onLongClick = onLongPress
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
         )
     }
 }
@@ -818,22 +953,64 @@ fun InventoryItemCard(
  * Enhanced inventory card with quick stock adjustment controls.
  * Shows +/- buttons and a field to add received stock without opening the detail dialog.
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun InventoryItemCardWithQuickStock(
     item: ItemEntity,
     selectionMode: Boolean,
     onAdjustStock: (Int) -> Unit,
     onAddReceivedStock: (Int) -> Unit,
+    onSetStock: (Int) -> Unit,
+    onSetStockKg: (Double) -> Unit,
+    onInlineEditingStockChanged: (Boolean) -> Unit,
+    onCardClick: (() -> Unit)? = null,
+    onCardLongPress: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    var showAddStockField by remember { mutableStateOf(false) }
     var addStockValue by remember { mutableStateOf("") }
+    var addingQty by remember { mutableStateOf(false) }
+
+    val stockStep = remember(item.isLoose, item.batchSize) {
+        if (item.isLoose) 1 else (item.batchSize?.takeIf { it > 0 } ?: 1)
+    }
+
+    var editingStock by remember { mutableStateOf(false) }
+    var stockHadFocus by remember { mutableStateOf(false) }
+    var stockEditValue by remember(item.id, item.stock, item.stockKg, item.isLoose) {
+        val raw = if (item.isLoose) item.stockKg.toString() else item.stock.toString()
+        mutableStateOf(TextFieldValue(raw, selection = TextRange(0, raw.length)))
+    }
+    val focusRequester = remember { FocusRequester() }
+    val qtyFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+
+    fun commitStockEdit() {
+        if (!editingStock) return
+        val raw = stockEditValue.text.trim()
+        if (item.isLoose) {
+            val v = raw.toDoubleOrNull()
+            if (v != null) onSetStockKg(v)
+        } else {
+            val v = raw.toIntOrNull()
+            if (v != null) onSetStock(v)
+        }
+        // Always exit edit mode (even if parse failed) to avoid getting "stuck" and to keep taps responsive.
+        editingStock = false
+        onInlineEditingStockChanged(false)
+        focusManager.clearFocus()
+    }
     
     KiranaCard(modifier = modifier, onClick = null) {
         Column(modifier = Modifier.fillMaxWidth()) {
+            // Header area: tapping opens full edit sheet; quick-stock row below remains fully interactive.
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        enabled = onCardClick != null,
+                        onClick = { onCardClick?.invoke() },
+                        onLongClick = { onCardLongPress?.invoke() }
+                    ),
                 verticalAlignment = Alignment.Top
             ) {
                 // Product image thumbnail
@@ -927,167 +1104,506 @@ fun InventoryItemCardWithQuickStock(
                 Spacer(modifier = Modifier.height(12.dp))
                 Divider(color = Gray100, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Quick +/- controls
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        // Minus button
-                        Surface(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clickable { onAdjustStock(-1) },
-                            shape = RoundedCornerShape(10.dp),
-                            color = LossRedBg
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Text(
-                                    text = "−",
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 20.sp,
-                                    color = LossRed
-                                )
-                            }
-                        }
-                        
-                        // Current stock display
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Gray50,
-                            modifier = Modifier.widthIn(min = 60.dp)
-                        ) {
-                            Text(
-                                text = if (item.isLoose) "${item.stockKg} kg" else "${item.stock}",
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = TextPrimary
-                            )
-                        }
-                        
-                        // Plus button
-                        Surface(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clickable { onAdjustStock(1) },
-                            shape = RoundedCornerShape(10.dp),
-                            color = KiranaGreenBg
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Text(
-                                    text = "+",
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 20.sp,
-                                    color = KiranaGreen
-                                )
-                            }
+
+                // Keep the row compact so the Qty + confirm/cancel always fits (matches screenshot).
+                val screenWidthDp = LocalConfiguration.current.screenWidthDp
+                val isCompact = screenWidthDp < 390
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    // Many devices report ~411dp in portrait; treat those as "tight" too so the qty UI doesn't collapse.
+                    val isTightWidth = maxWidth < 460.dp
+                    val isNarrow = isCompact || isTightWidth
+                    val controlSize = if (isNarrow) 44.dp else 52.dp
+                    val controlShape = RoundedCornerShape(if (isNarrow) 14.dp else 16.dp)
+                    val gap = if (isNarrow) 8.dp else 12.dp
+                    val leftButtonWidth = if (isNarrow) 40.dp else controlSize
+                    val stockMinWidth = if (isNarrow) 64.dp else 96.dp
+                    val stockMaxWidth = if (isNarrow) 86.dp else 120.dp
+                    val stockHorizontalPadding = if (isNarrow) 8.dp else 12.dp
+                    val iconTextSize = if (isNarrow) 20.sp else 24.sp
+                    val stockTextSize = if (isNarrow) 18.sp else 20.sp
+                    val isQtyRowTight = isNarrow && addingQty
+
+                    // Current stock: fixed-size tap-to-edit (no resize between view/edit)
+                    val displayStock = remember(item.id, item.stock, item.stockKg, item.isLoose) {
+                        if (item.isLoose) {
+                            val v = item.stockKg
+                            if (v % 1.0 == 0.0) v.toInt().toString() else v.toString()
+                        } else {
+                            item.stock.toString()
                         }
                     }
-                    
-                    // Add Stock button/field
-                    if (showAddStockField) {
+
+                    LaunchedEffect(editingStock) {
+                        if (editingStock) {
+                            stockHadFocus = false
+                            runCatching { focusRequester.requestFocus() }
+                        }
+                    }
+
+                    LaunchedEffect(addingQty) {
+                        if (addingQty) {
+                            runCatching { qtyFocusRequester.requestFocus() }
+                        }
+                    }
+
+                    // In tight portrait, split into 2 lines so "Add Quantity" is dominant and the qty field never collapses.
+                    val useStackedLayout = isTightWidth
+
+                    if (!useStackedLayout) {
+                        // One row (landscape/wider phones):  −  [stock]  +   [Add Qty / qty input]  [✓]  [x]
                         Row(
+                            modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(gap)
                         ) {
-                            OutlinedTextField(
-                                value = addStockValue,
-                                onValueChange = { v ->
-                                    addStockValue = v.filter { it.isDigit() }.take(5)
-                                },
-                                modifier = Modifier.width(80.dp).height(44.dp),
-                                placeholder = { Text("Qty", fontSize = 12.sp) },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                ),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedContainerColor = White,
-                                    unfocusedContainerColor = White,
-                                    focusedBorderColor = KiranaGreen,
-                                    unfocusedBorderColor = Gray200
-                                ),
-                                shape = RoundedCornerShape(10.dp)
-                            )
-                            
-                            // Confirm add
+                            // Minus
                             Surface(
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .width(leftButtonWidth)
+                                    .height(controlSize)
                                     .clickable {
-                                        val qty = addStockValue.toIntOrNull() ?: 0
-                                        if (qty > 0) {
-                                            onAddReceivedStock(qty)
-                                            addStockValue = ""
-                                            showAddStockField = false
-                                        }
+                                        // If user was editing stock, commit it so +/- immediately reflects in UI.
+                                        commitStockEdit()
+                                        onAdjustStock(-stockStep)
                                     },
-                                shape = RoundedCornerShape(10.dp),
-                                color = KiranaGreen
+                                shape = controlShape,
+                                color = LossRedBg
                             ) {
                                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                    Icon(
-                                        Icons.Default.Add,
-                                        contentDescription = "Add stock",
-                                        tint = White,
-                                        modifier = Modifier.size(20.dp)
+                                    Text(text = "−", fontWeight = FontWeight.Black, fontSize = iconTextSize, color = LossRed)
+                                }
+                            }
+
+                            Surface(
+                                shape = controlShape,
+                                color = Gray50,
+                                modifier = Modifier
+                                    .widthIn(min = stockMinWidth, max = stockMaxWidth)
+                                    .height(controlSize)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (editingStock) KiranaGreen else Gray100,
+                                        shape = controlShape
+                                    )
+                                    .clickable {
+                                        if (!editingStock) {
+                                            editingStock = true
+                                            onInlineEditingStockChanged(true)
+                                            // Select-all so user can type immediately to replace.
+                                            stockEditValue = TextFieldValue(displayStock, selection = TextRange(0, displayStock.length))
+                                        }
+                                    }
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = stockHorizontalPadding),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    BasicTextField(
+                                        value = if (editingStock) stockEditValue else TextFieldValue(displayStock),
+                                        onValueChange = { v ->
+                                            if (!editingStock) return@BasicTextField
+                                            val filteredText =
+                                                if (item.isLoose) InputFilters.decimal(v.text, maxDecimals = 3)
+                                                else InputFilters.digitsOnly(v.text, maxLen = 6)
+                                            stockEditValue = v.copy(text = filteredText)
+                                        },
+                                        enabled = editingStock,
+                                        readOnly = !editingStock,
+                                        singleLine = true,
+                                        cursorBrush = SolidColor(KiranaGreen),
+                                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = stockTextSize,
+                                            color = TextPrimary,
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                        ),
+                                        keyboardOptions = KeyboardOptions(
+                                            keyboardType = if (item.isLoose) KeyboardType.Decimal else KeyboardType.Number,
+                                            imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                                        ),
+                                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                            onDone = { commitStockEdit() }
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .focusRequester(focusRequester)
+                                            .onFocusChanged { st ->
+                                                if (!editingStock) return@onFocusChanged
+                                                if (st.isFocused) {
+                                                    stockHadFocus = true
+                                                } else {
+                                                    if (stockHadFocus) commitStockEdit()
+                                                }
+                                            }
                                     )
                                 }
                             }
-                            
-                            // Cancel
+
+                            // Plus
                             Surface(
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .width(leftButtonWidth)
+                                    .height(controlSize)
                                     .clickable {
-                                        addStockValue = ""
-                                        showAddStockField = false
+                                        commitStockEdit()
+                                        onAdjustStock(stockStep)
                                     },
-                                shape = RoundedCornerShape(10.dp),
-                                color = Gray100
+                                shape = controlShape,
+                                color = KiranaGreenBg
                             ) {
                                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = "Cancel",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
+                                    Text(text = "+", fontWeight = FontWeight.Black, fontSize = iconTextSize, color = KiranaGreen)
+                                }
+                            }
+
+                            if (!addingQty) {
+                                Surface(
+                                    modifier = Modifier
+                                        .height(controlSize)
+                                        .weight(1f)
+                                        .clickable {
+                                            commitStockEdit()
+                                            addingQty = true
+                                            runCatching { qtyFocusRequester.requestFocus() }
+                                        },
+                                    shape = controlShape,
+                                    color = KiranaGreenBg,
+                                    border = BorderStroke(2.dp, KiranaGreen)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
+                                        Text(
+                                            text = "Add Quantity",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = if (isNarrow) 14.sp else 16.sp,
+                                            color = KiranaGreen,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            } else {
+                                // Qty input + tick save + cancel
+                                Surface(
+                                    modifier = Modifier
+                                        .height(controlSize)
+                                        .weight(1f)
+                                        .border(3.dp, KiranaGreen, controlShape),
+                                    shape = controlShape,
+                                    color = White
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize().padding(horizontal = if (isQtyRowTight) 10.dp else if (isNarrow) 14.dp else 18.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        BasicTextField(
+                                            value = addStockValue,
+                                            onValueChange = { v -> addStockValue = v.filter { it.isDigit() }.take(5) },
+                                            singleLine = true,
+                                            cursorBrush = SolidColor(KiranaGreen),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = if (isNarrow) 18.sp else 20.sp,
+                                                color = TextPrimary
+                                            ),
+                                            modifier = Modifier.fillMaxWidth().focusRequester(qtyFocusRequester),
+                                            decorationBox = { inner ->
+                                                if (addStockValue.isBlank()) {
+                                                    Text(
+                                                        "Type qty",
+                                                        color = Gray400,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = if (isNarrow) 16.sp else 18.sp
+                                                    )
+                                                }
+                                                inner()
+                                            }
+                                        )
+                                    }
+                                }
+
+                                // Tick save
+                                Surface(
+                                    modifier = Modifier
+                                        .size(controlSize)
+                                        .clickable {
+                                            val qty = addStockValue.toIntOrNull() ?: 0
+                                            if (qty <= 0) {
+                                                runCatching { qtyFocusRequester.requestFocus() }
+                                                return@clickable
+                                            }
+                                            commitStockEdit()
+                                            onAddReceivedStock(qty)
+                                            addStockValue = ""
+                                            addingQty = false
+                                            focusManager.clearFocus()
+                                        },
+                                    shape = controlShape,
+                                    color = KiranaGreen
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                        Icon(
+                                            Icons.Default.Check,
+                                            contentDescription = "Save quantity",
+                                            tint = White,
+                                            modifier = Modifier.size(if (isQtyRowTight) 20.dp else if (isNarrow) 22.dp else 26.dp)
+                                        )
+                                    }
+                                }
+
+                                // Cancel (X)
+                                Surface(
+                                    modifier = Modifier
+                                        .size(controlSize)
+                                        .clickable {
+                                            addStockValue = ""
+                                            addingQty = false
+                                            focusManager.clearFocus()
+                                        },
+                                    shape = controlShape,
+                                    color = Gray100
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Cancel",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(if (isNarrow) 22.dp else 26.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
                     } else {
-                        // "Add Stock" button
-                        Surface(
-                            modifier = Modifier.clickable { showAddStockField = true },
-                            shape = RoundedCornerShape(10.dp),
-                            color = Blue100
-                        ) {
+                        // Two lines (tight portrait): first row is stock controls, second row is dominant Add/Qty UI.
+                        Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(gap)
                             ) {
-                                Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = null,
-                                    tint = Blue600,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = "Add Stock",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp,
-                                    color = Blue600
-                                )
+                                // Minus
+                                Surface(
+                                    modifier = Modifier
+                                        .width(leftButtonWidth)
+                                        .height(controlSize)
+                                        .clickable {
+                                            commitStockEdit()
+                                            onAdjustStock(-stockStep)
+                                        },
+                                    shape = controlShape,
+                                    color = LossRedBg
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                        Text(text = "−", fontWeight = FontWeight.Black, fontSize = iconTextSize, color = LossRed)
+                                    }
+                                }
+
+                                Surface(
+                                    shape = controlShape,
+                                    color = Gray50,
+                                    modifier = Modifier
+                                        .widthIn(min = stockMinWidth, max = stockMaxWidth)
+                                        .height(controlSize)
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (editingStock) KiranaGreen else Gray100,
+                                            shape = controlShape
+                                        )
+                                        .clickable {
+                                            if (!editingStock) {
+                                                editingStock = true
+                                                onInlineEditingStockChanged(true)
+                                                stockEditValue = TextFieldValue(displayStock, selection = TextRange(0, displayStock.length))
+                                            }
+                                        }
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(horizontal = stockHorizontalPadding),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        BasicTextField(
+                                            value = if (editingStock) stockEditValue else TextFieldValue(displayStock),
+                                            onValueChange = { v ->
+                                                if (!editingStock) return@BasicTextField
+                                                val filteredText =
+                                                    if (item.isLoose) InputFilters.decimal(v.text, maxDecimals = 3)
+                                                    else InputFilters.digitsOnly(v.text, maxLen = 6)
+                                                stockEditValue = v.copy(text = filteredText)
+                                            },
+                                            enabled = editingStock,
+                                            readOnly = !editingStock,
+                                            singleLine = true,
+                                            cursorBrush = SolidColor(KiranaGreen),
+                                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = stockTextSize,
+                                                color = TextPrimary,
+                                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                            ),
+                                            keyboardOptions = KeyboardOptions(
+                                                keyboardType = if (item.isLoose) KeyboardType.Decimal else KeyboardType.Number,
+                                                imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                                            ),
+                                            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                                onDone = { commitStockEdit() }
+                                            ),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .focusRequester(focusRequester)
+                                                .onFocusChanged { st ->
+                                                    if (!editingStock) return@onFocusChanged
+                                                    if (st.isFocused) {
+                                                        stockHadFocus = true
+                                                    } else {
+                                                        if (stockHadFocus) commitStockEdit()
+                                                    }
+                                                }
+                                        )
+                                    }
+                                }
+
+                                // Plus
+                                Surface(
+                                    modifier = Modifier
+                                        .width(leftButtonWidth)
+                                        .height(controlSize)
+                                        .clickable {
+                                            commitStockEdit()
+                                            onAdjustStock(stockStep)
+                                        },
+                                    shape = controlShape,
+                                    color = KiranaGreenBg
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                        Text(text = "+", fontWeight = FontWeight.Black, fontSize = iconTextSize, color = KiranaGreen)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            if (!addingQty) {
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(controlSize)
+                                        .clickable {
+                                            commitStockEdit()
+                                            addingQty = true
+                                            runCatching { qtyFocusRequester.requestFocus() }
+                                        },
+                                    shape = controlShape,
+                                    color = KiranaGreenBg,
+                                    border = BorderStroke(2.dp, KiranaGreen)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+                                        Text(
+                                            text = "Add Quantity",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 16.sp,
+                                            color = KiranaGreen,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(gap)
+                                ) {
+                                    Surface(
+                                        modifier = Modifier
+                                            .height(controlSize)
+                                            .weight(1f)
+                                            .border(3.dp, KiranaGreen, controlShape),
+                                        shape = controlShape,
+                                        color = White
+                                    ) {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            BasicTextField(
+                                                value = addStockValue,
+                                                onValueChange = { v -> addStockValue = v.filter { it.isDigit() }.take(5) },
+                                                singleLine = true,
+                                                cursorBrush = SolidColor(KiranaGreen),
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 18.sp,
+                                                    color = TextPrimary
+                                                ),
+                                                modifier = Modifier.fillMaxWidth().focusRequester(qtyFocusRequester),
+                                                decorationBox = { inner ->
+                                                    if (addStockValue.isBlank()) {
+                                                        Text(
+                                                            "Type qty",
+                                                            color = Gray400,
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 16.sp
+                                                        )
+                                                    }
+                                                    inner()
+                                                }
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        modifier = Modifier
+                                            .size(controlSize)
+                                            .clickable {
+                                                val qty = addStockValue.toIntOrNull() ?: 0
+                                                if (qty <= 0) {
+                                                    runCatching { qtyFocusRequester.requestFocus() }
+                                                    return@clickable
+                                                }
+                                                commitStockEdit()
+                                                onAddReceivedStock(qty)
+                                                addStockValue = ""
+                                                addingQty = false
+                                                focusManager.clearFocus()
+                                            },
+                                        shape = controlShape,
+                                        color = KiranaGreen
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = "Save quantity",
+                                                tint = White,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        modifier = Modifier
+                                            .size(controlSize)
+                                            .clickable {
+                                                addStockValue = ""
+                                                addingQty = false
+                                                focusManager.clearFocus()
+                                            },
+                                        shape = controlShape,
+                                        color = Gray100
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                            Icon(
+                                                Icons.Default.Close,
+                                                contentDescription = "Cancel",
+                                                tint = TextSecondary,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1118,7 +1634,7 @@ fun Badge(text: String, color: Color, bg: Color) {
 @OptIn(ExperimentalMaterial3Api::class)
 fun AddItemDialog(
     onDismiss: () -> Unit,
-    onSave: (String, String, Double, Double, Boolean, Double, Double, Int, String?, String?, Double?, Int?, String?, Int?, Long?) -> Unit,
+    onSave: (String, String, Double, Double, Boolean, Double, Double, Int, String?, String?, Double?, String?, Int?, String?, Int?, Long?, Int?) -> Unit,
     onDelete: (ItemEntity) -> Unit,
     onScanBarcode: () -> Unit,
     scannedBarcode: String?,
@@ -1130,9 +1646,13 @@ fun AddItemDialog(
     categories: List<String>,
     vendors: List<PartyEntity>,
     onAddVendor: suspend (String, String, String?) -> PartyEntity?,
-    prefillName: String? = null
+    categoryHsnDefaults: Map<String, String>,
+    onSaveCategoryHsnDefault: suspend (String, String?) -> Unit,
+    prefillName: String? = null,
+    saving: Boolean = false
 ) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("General") }
@@ -1145,7 +1665,13 @@ fun AddItemDialog(
     var sellingPrice by remember { mutableStateOf("") }
     var isLoose by remember { mutableStateOf(false) }
     var stock by remember { mutableStateOf("") }
+    var batchSize by remember { mutableStateOf("") }
     var gst by remember { mutableStateOf("") }
+    var hsnCode by remember { mutableStateOf("") }
+    var hsnTouched by remember { mutableStateOf(false) }
+    var showHsnInfo by remember { mutableStateOf(false) }
+    var saveHsnAsCategoryDefault by remember { mutableStateOf(false) }
+    var showHsnError by remember { mutableStateOf(false) }
     var selectedVendorId by remember { mutableStateOf<Int?>(null) }
     var showVendorDropdown by remember { mutableStateOf(false) }
     var vendorQuery by remember { mutableStateOf("") }
@@ -1161,14 +1687,59 @@ fun AddItemDialog(
     var showExpiryPicker by remember { mutableStateOf(false) }
     var showNameError by remember { mutableStateOf(false) }
 
-    var pendingCameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    // Crop/edit launcher (uCrop)
+    val cropLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val out = result.data?.let { UCrop.getOutput(it) }
+            if (out != null) imageUri = out.toString()
+        } else if (result.resultCode == Activity.RESULT_CANCELED) {
+            // If user cancels crop, keep the last known image (camera/gallery source if present).
+            val src = pendingCameraUri
+            if (imageUri.isNullOrBlank() && src != null) imageUri = src.toString()
+        }
+    }
+
+    val launchCrop: (Uri) -> Unit = { source ->
+        val destDir = File(context.cacheDir, "crops").apply { mkdirs() }
+        val dest = Uri.fromFile(File.createTempFile("crop_", ".jpg", destDir))
+        val options = UCrop.Options().apply {
+            setCompressionFormat(Bitmap.CompressFormat.JPEG)
+            setCompressionQuality(85)
+            // Keep UI consistent and simple
+            setHideBottomControls(false)
+            setFreeStyleCropEnabled(true)
+            setToolbarTitle("Crop photo")
+            setAllowedGestures(UCropActivity.SCALE, UCropActivity.ROTATE, UCropActivity.ALL)
+        }
+        // Start crop; if user cancels, we keep existing value.
+        // Keep aspect square by default (inventory thumbnails look best), but allow freestyle.
+        val intent = UCrop.of(source, dest)
+            .withAspectRatio(1f, 1f)
+            .withMaxResultSize(1024, 1024)
+            .withOptions(options)
+            .getIntent(context)
+        cropLauncher.launch(intent)
+        // Keep reference so cancel can still show the camera photo.
+        pendingCameraUri = source
+        imageUri = source.toString()
+    }
+
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) {
-            imageUri = pendingCameraUri?.toString()
+            val src = pendingCameraUri
+            if (src != null) {
+                // After capture, open crop/edit flow.
+                launchCrop(src)
+            }
         }
     }
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) imageUri = uri.toString()
+        if (uri != null) {
+            // After picking, open crop/edit flow.
+            launchCrop(uri)
+        }
     }
 
     LaunchedEffect(scannedBarcode) {
@@ -1194,13 +1765,24 @@ fun AddItemDialog(
         isLoose = item.isLoose
         sellingPrice = if (item.isLoose) item.pricePerKg.toString() else item.price.toString()
         stock = if (item.isLoose) item.stockKg.toString() else item.stock.toString()
+        batchSize = item.batchSize?.toString().orEmpty()
         gst = item.gstPercentage?.toString().orEmpty()
+        hsnCode = item.hsnCode.orEmpty()
+        hsnTouched = item.hsnCode?.isNotBlank() == true
         reorderPoint = item.reorderPoint.toString()
         location = item.rackLocation.orEmpty()
         imageUri = item.imageUri
         expiryDateMillis = item.expiryDateMillis
         selectedVendorId = item.vendorId
         onConsumeExistingItem()
+    }
+
+    // Auto-fill HSN from category default only when the user hasn't edited the field.
+    LaunchedEffect(category, categoryHsnDefaults) {
+        if (!hsnTouched && hsnCode.isBlank()) {
+            val suggested = categoryHsnDefaults[category.trim()].orEmpty()
+            if (suggested.isNotBlank()) hsnCode = suggested
+        }
     }
 
     val normalizedCategories = remember(categories, category) {
@@ -1553,6 +2135,82 @@ fun AddItemDialog(
                             keyboardType = KeyboardType.Decimal
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("HSN (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
+                        IconButton(onClick = { showHsnInfo = !showHsnInfo }) {
+                            Icon(Icons.Default.Info, contentDescription = "HSN info", tint = TextSecondary)
+                        }
+                    }
+                    KiranaInput(
+                        value = hsnCode,
+                        onValueChange = {
+                            hsnTouched = true
+                            hsnCode = InputFilters.digitsOnly(it, maxLen = 8)
+                            showHsnError = false
+                        },
+                        placeholder = "e.g. 1006",
+                        label = "HSN (4–8 digits)",
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardType = KeyboardType.Number
+                    )
+                    if (showHsnError) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "HSN should be 4–8 digits (optional field).",
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    if (hsnCode.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = saveHsnAsCategoryDefault,
+                                onCheckedChange = { saveHsnAsCategoryDefault = it }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                "Use this as default HSN for category “${category.trim()}”",
+                                color = TextSecondary
+                            )
+                        }
+                    }
+                    AnimatedVisibility(visible = showHsnInfo) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "HSN (Harmonized System of Nomenclature) is used to classify goods for GST and compliance. " +
+                                    "It’s product/category-based (not brand-based). This field is optional and can be filled later.",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(onClick = { uriHandler.openUri("https://tutorial.gst.gov.in/userguide/taxpayersdashboard/Search_HSN_SAC_Tax_Rates_manual.htm") }) {
+                                Text("Official GST: HSN/SAC search guide", fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(onClick = { uriHandler.openUri("https://www.cbic.gov.in/") }) {
+                                Text("Official CBIC (Customs) reference", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                    if (!isLoose) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        KiranaInput(
+                            value = batchSize,
+                            onValueChange = { batchSize = InputFilters.digitsOnly(it, maxLen = 5) },
+                            placeholder = "e.g. 12",
+                            label = "Batch size (Optional)",
+                            modifier = Modifier.fillMaxWidth(),
+                            keyboardType = KeyboardType.Number
+                        )
+                    }
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         // Location input added
@@ -1620,6 +2278,15 @@ fun AddItemDialog(
                                 return@KiranaButton
                             }
                             showNameError = false
+
+                            val cleanHsn = hsnCode.trim().ifBlank { null }
+                            if (cleanHsn != null && !GstValidator.isValidHsn(cleanHsn)) {
+                                showHsnError = true
+                                return@KiranaButton
+                            }
+                            if (saveHsnAsCategoryDefault) {
+                                scope.launch { onSaveCategoryHsnDefault(category, cleanHsn) }
+                            }
                             onSave(
                                 cleanName,
                                 category,
@@ -1632,13 +2299,15 @@ fun AddItemDialog(
                                 location,
                                 barcode,
                                 gst.toDoubleOrNull(),
+                                cleanHsn,
                                 reorderPoint.toIntOrNull(),
                                 imageUri,
                                 selectedVendorId,
-                                expiryDateMillis
+                                expiryDateMillis,
+                                batchSize.toIntOrNull()
                             )
                         },
-                        enabled = name.trim().isNotBlank(),
+                        enabled = !saving && name.trim().isNotBlank(),
                         modifier = Modifier
                             .weight(1f)
                             .height(56.dp),

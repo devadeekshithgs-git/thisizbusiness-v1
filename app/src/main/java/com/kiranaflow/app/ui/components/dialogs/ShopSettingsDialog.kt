@@ -21,15 +21,19 @@ import com.kiranaflow.app.ui.theme.*
 @Composable
 fun ShopSettingsDialog(
     shopName: String,
+    shopPhone: String,
     ownerName: String,
     upiId: String,
+    upiPayeeName: String,
     whatsappReminderMessage: String,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String) -> Unit
+    onSave: (String, String, String, String, String, String) -> Unit
 ) {
     var shopNameState by remember { mutableStateOf(shopName) }
+    var shopPhoneState by remember { mutableStateOf(shopPhone) }
     var ownerNameState by remember { mutableStateOf(ownerName) }
     var upiIdState by remember { mutableStateOf(upiId) }
+    var upiPayeeNameState by remember { mutableStateOf(upiPayeeName) }
     var whatsappReminderState by remember { mutableStateOf(whatsappReminderMessage) }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -78,6 +82,15 @@ fun ShopSettingsDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
+                KiranaInput(
+                    value = shopPhoneState,
+                    onValueChange = { shopPhoneState = it },
+                    placeholder = "e.g. 9986469000",
+                    label = "SHOP PHONE (OPTIONAL)"
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
                 // Owner Name
                 KiranaInput(
                     value = ownerNameState,
@@ -117,6 +130,15 @@ fun ShopSettingsDialog(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 KiranaInput(
+                    value = upiPayeeNameState,
+                    onValueChange = { upiPayeeNameState = it },
+                    placeholder = "e.g. Bhanu Super Mart (as in bank)",
+                    label = "UPI ACCOUNT NAME (PAYEE NAME)"
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                KiranaInput(
                     value = whatsappReminderState,
                     onValueChange = { whatsappReminderState = it },
                     placeholder = "e.g. Namaste {name}, your due is ₹{due}. Please pay.",
@@ -129,7 +151,14 @@ fun ShopSettingsDialog(
                 KiranaButton(
                     text = "✓ Save Settings",
                     onClick = {
-                        onSave(shopNameState, ownerNameState, upiIdState, whatsappReminderState)
+                        onSave(
+                            shopNameState,
+                            shopPhoneState,
+                            ownerNameState,
+                            upiIdState,
+                            upiPayeeNameState,
+                            whatsappReminderState
+                        )
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Blue600,

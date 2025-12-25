@@ -51,3 +51,10 @@ create index if not exists kf_items_device_local_idx
 create index if not exists kf_parties_device_local_idx
   on public.kf_parties (device_id, local_id);
 
+
+
+
+
+
+
+

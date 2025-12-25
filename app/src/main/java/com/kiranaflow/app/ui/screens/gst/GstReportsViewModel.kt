@@ -165,7 +165,7 @@ class GstReportsViewModel(application: Application) : AndroidViewModel(applicati
                     val taxable = when {
                         (lineTaxableOverride[r.itemLineId] ?: 0.0) > 0.0 -> lineTaxableOverride[r.itemLineId] ?: 0.0
                         r.taxableValueSnapshot > 0.0 -> r.taxableValueSnapshot
-                        r.unit.uppercase() == "GRAM" -> r.price * (r.qty / 1000.0)
+                        r.unit.uppercase() in setOf("GRAM", "G", "GM", "GMS", "GRAMS") -> r.price * (r.qty / 1000.0) // backward-compat only
                         else -> r.price * r.qty
                     }
 
@@ -205,7 +205,7 @@ class GstReportsViewModel(application: Application) : AndroidViewModel(applicati
             val key = li.hsnCode.trim()
             if (key.isBlank()) return@forEach
             val cur = hsnAgg[key]
-            val qty = (cur?.qty ?: 0.0) + li.qty.toDouble()
+            val qty = (cur?.qty ?: 0.0) + li.qty
             val txval = (cur?.taxableValue ?: 0.0) + li.taxableValue
             val cgst = (cur?.cgstAmount ?: 0.0) + li.cgstAmount
             val sgst = (cur?.sgstAmount ?: 0.0) + li.sgstAmount
@@ -256,39 +256,76 @@ class GstReportsViewModel(application: Application) : AndroidViewModel(applicati
         val issues = mutableListOf<Gstr1ValidationIssue>()
 
         if (businessGstin.isBlank()) {
-            issues += Gstr1ValidationIssue(message = "Missing your GSTIN in Settings (required for export).")
+            issues += Gstr1ValidationIssue(
+                code = Gstr1ValidationIssue.Code.BUSINESS_GSTIN_MISSING,
+                message = "Missing your GSTIN in Settings (required for export)."
+            )
         } else if (!GstValidator.isValidGstin(businessGstin)) {
-            issues += Gstr1ValidationIssue(message = "Your GSTIN looks invalid (checksum mismatch). Please verify in Settings.")
+            issues += Gstr1ValidationIssue(
+                code = Gstr1ValidationIssue.Code.BUSINESS_GSTIN_INVALID,
+                message = "Your GSTIN looks invalid (checksum mismatch). Please verify in Settings."
+            )
         }
-        if (businessLegalName.isBlank()) issues += Gstr1ValidationIssue(message = "Missing your Legal Name in Settings (required for export).")
-        if (businessStateCode == 0) issues += Gstr1ValidationIssue(message = "Missing your State Code in Settings (required for export).")
+        if (businessLegalName.isBlank()) {
+            issues += Gstr1ValidationIssue(
+                code = Gstr1ValidationIssue.Code.BUSINESS_LEGAL_NAME_MISSING,
+                message = "Missing your Legal Name in Settings (required for export)."
+            )
+        }
+        if (businessStateCode == 0) {
+            issues += Gstr1ValidationIssue(
+                code = Gstr1ValidationIssue.Code.BUSINESS_STATE_CODE_MISSING,
+                message = "Missing your State Code in Settings (required for export)."
+            )
+        }
 
         // Invoice number duplicates (case-insensitive trim).
         val seen = mutableSetOf<String>()
         invoices.forEach { inv ->
             val inum = inv.invoiceNumber.trim()
             if (inum.isBlank()) {
-                issues += Gstr1ValidationIssue(message = "Invoice # missing for transaction ${inv.txId}.", txId = inv.txId)
+                issues += Gstr1ValidationIssue(
+                    code = Gstr1ValidationIssue.Code.INVOICE_NUMBER_MISSING,
+                    message = "Invoice # missing for transaction ${inv.txId}.",
+                    txId = inv.txId
+                )
             } else {
                 val key = inum.uppercase()
                 if (!seen.add(key)) {
-                    issues += Gstr1ValidationIssue(message = "Duplicate invoice number: $inum", txId = inv.txId)
+                    issues += Gstr1ValidationIssue(
+                        code = Gstr1ValidationIssue.Code.INVOICE_NUMBER_DUPLICATE,
+                        message = "Duplicate invoice number: $inum",
+                        txId = inv.txId
+                    )
                 }
             }
 
             if (inv.placeOfSupplyStateCode == 0) {
-                issues += Gstr1ValidationIssue(message = "Place of supply missing (state code) for invoice ${inv.invoiceNumber}.", txId = inv.txId)
+                issues += Gstr1ValidationIssue(
+                    code = Gstr1ValidationIssue.Code.INVOICE_PLACE_OF_SUPPLY_MISSING,
+                    message = "Place of supply missing (state code) for invoice ${inv.invoiceNumber}.",
+                    txId = inv.txId
+                )
             }
 
             if (inv.isB2b && inv.recipientGstin.isBlank()) {
-                issues += Gstr1ValidationIssue(message = "B2B invoice requires recipient GSTIN: ${inv.invoiceNumber}", txId = inv.txId)
+                issues += Gstr1ValidationIssue(
+                    code = Gstr1ValidationIssue.Code.INVOICE_B2B_RECIPIENT_GSTIN_MISSING,
+                    message = "B2B invoice requires recipient GSTIN: ${inv.invoiceNumber}",
+                    txId = inv.txId
+                )
             } else if (inv.isB2b && !GstValidator.isValidGstin(inv.recipientGstin)) {
-                issues += Gstr1ValidationIssue(message = "Recipient GSTIN invalid (checksum mismatch) for invoice ${inv.invoiceNumber}.", txId = inv.txId)
+                issues += Gstr1ValidationIssue(
+                    code = Gstr1ValidationIssue.Code.INVOICE_B2B_RECIPIENT_GSTIN_INVALID,
+                    message = "Recipient GSTIN invalid (checksum mismatch) for invoice ${inv.invoiceNumber}.",
+                    txId = inv.txId
+                )
             }
 
             inv.lineItems.forEach { li ->
                 if (!GstValidator.isValidHsn(li.hsnCode)) {
                     issues += Gstr1ValidationIssue(
+                        code = Gstr1ValidationIssue.Code.LINE_HSN_MISSING,
                         message = "HSN/SAC missing for '${li.itemName}' in invoice ${inv.invoiceNumber}.",
                         txId = inv.txId,
                         lineId = li.lineId
@@ -296,6 +333,7 @@ class GstReportsViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 if (li.gstRate < 0.0) {
                     issues += Gstr1ValidationIssue(
+                        code = Gstr1ValidationIssue.Code.LINE_GST_RATE_INVALID,
                         message = "Invalid GST % for '${li.itemName}' in invoice ${inv.invoiceNumber}.",
                         txId = inv.txId,
                         lineId = li.lineId
@@ -303,6 +341,7 @@ class GstReportsViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 if (li.taxableValue <= 0.0) {
                     issues += Gstr1ValidationIssue(
+                        code = Gstr1ValidationIssue.Code.LINE_TAXABLE_VALUE_MISSING,
                         message = "Taxable value missing for '${li.itemName}' in invoice ${inv.invoiceNumber}.",
                         txId = inv.txId,
                         lineId = li.lineId

@@ -6,6 +6,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,6 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -412,7 +414,7 @@ fun TransactionsScreen(
 }
 
 @Composable
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 private fun TransactionExplorerCard(
     row: TransactionRow,
     selectionMode: Boolean,
@@ -466,7 +468,10 @@ private fun TransactionExplorerCard(
             )
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Box(
                     modifier = Modifier
                         .size(44.dp)
@@ -478,9 +483,19 @@ private fun TransactionExplorerCard(
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(tx.title, fontWeight = FontWeight.Bold, color = TextPrimary, maxLines = 1)
+                    Text(
+                        tx.title,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         TypePill(label = tx.type, bg = typeBg, fg = typeColor)
                         if (isUnsynced) {
                             TypePill(label = "Sync", bg = AlertOrangeBg, fg = AlertOrange)
@@ -488,24 +503,49 @@ private fun TransactionExplorerCard(
                         if (row.party != null) {
                             PillWithIcon(icon = partyIcon, label = row.party.name, fg = partyColor)
                         }
-                        TypePill(label = tx.paymentMode, bg = Gray100, fg = TextSecondary)
                     }
                 }
-                Text(
-                    text = "$sign₹${kotlin.math.abs(tx.amount).toInt()}",
-                    fontWeight = FontWeight.Black,
-                    color = amountColor
-                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.wrapContentWidth()
+                ) {
+                    TypePill(label = tx.paymentMode, bg = Gray100, fg = TextSecondary)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "$sign₹${kotlin.math.abs(tx.amount).toInt()}",
+                        fontWeight = FontWeight.Black,
+                        color = amountColor,
+                        maxLines = 1
+                    )
+                }
                 if (selectionMode) {
                     Spacer(modifier = Modifier.width(10.dp))
                     Checkbox(checked = isSelected, onCheckedChange = { onClick() })
                 }
             }
 
-            val itemsLine = row.items.takeIf { it.isNotEmpty() }?.joinToString(", ") { "${it.itemNameSnapshot}×${it.qty}" }
+            val itemsLine = row.items.takeIf { it.isNotEmpty() }?.joinToString(", ") { it ->
+                val unitUp = it.unit.trim().uppercase()
+                val qtyStr = if (unitUp == "KG" || unitUp == "KGS") {
+                    val txt = if (it.qty % 1.0 == 0.0) it.qty.toInt().toString()
+                    else String.format("%.3f", it.qty).trimEnd('0').trimEnd('.')
+                    "${txt}kg"
+                } else {
+                    it.qty.toInt().toString()
+                }
+                "${it.itemNameSnapshot}×$qtyStr"
+            }
             if (!itemsLine.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(10.dp))
-                Text(itemsLine, color = TextSecondary, fontSize = 12.sp, maxLines = 2)
+                Text(
+                    itemsLine,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -519,7 +559,15 @@ private fun TypePill(label: String, bg: androidx.compose.ui.graphics.Color, fg: 
             .background(bg)
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
-        Text(label, color = fg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(
+            label,
+            color = fg,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -534,7 +582,15 @@ private fun PillWithIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, 
     ) {
         Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(14.dp))
         Spacer(modifier = Modifier.width(6.dp))
-        Text(label, color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(
+            label,
+            color = TextPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

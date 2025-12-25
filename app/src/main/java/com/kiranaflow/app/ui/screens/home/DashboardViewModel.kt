@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.kiranaflow.app.data.local.ItemEntity
 import com.kiranaflow.app.data.local.ReminderEntity
 import com.kiranaflow.app.data.local.TransactionEntity
+import com.kiranaflow.app.data.local.TransactionItemEntity
 import com.kiranaflow.app.data.local.ShopSettingsStore
 import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.data.local.KiranaDatabase
@@ -21,6 +22,8 @@ import java.time.LocalDate
 
 data class DashboardState(
     val revenue: Double = 0.0,
+    // Cost of goods sold (stock cost) computed from SALE line-items using item.costPrice.
+    val cogs: Double = 0.0,
     val expense: Double = 0.0,
     val netProfit: Double = 0.0,
     val cashInHand: Double = 0.0,
@@ -71,13 +74,28 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 repository.cleanupOldCompletedReminders()
             }
 
+            // Kotlin Flow `combine` overloads in this project support up to 5 typed flows.
+            // Combine (range + customRange) first, then combine with the other 4 flows.
+            val rangeAndCustomRange: Flow<Pair<String, Pair<Long, Long>?>> =
+                combine(selectedRange, customRangeMillis) { range, customRange -> range to customRange }
+
+            @Suppress("UNCHECKED_CAST")
             combine(
-                repository.allTransactions,
-                repository.getRemindersWithRecentCompleted(),
-                repository.allItems,
-                selectedRange,
-                customRangeMillis
-            ) { transactions, reminders, allItems, range, customRange ->
+                listOf(
+                    repository.allTransactions,
+                    repository.allTransactionItems,
+                    repository.getRemindersWithRecentCompleted(),
+                    repository.allItems,
+                    rangeAndCustomRange
+                )
+            ) { values ->
+                val transactions = values[0] as List<TransactionEntity>
+                val txItems = values[1] as List<TransactionItemEntity>
+                val reminders = values[2] as List<ReminderEntity>
+                val allItems = values[3] as List<ItemEntity>
+                val rangeAndCustom = values[4] as Pair<String, Pair<Long, Long>?>
+
+                val (range, customRange) = rangeAndCustom
                 val now = System.currentTimeMillis()
                 val dayMs = 24L * 60L * 60L * 1000L
 
@@ -111,10 +129,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     .take(10)
                     .toList()
 
-                Triple(filtered, range, Pair(start, end)) to Triple(transactions, reminders, expiringSoon)
-            }.onEach { (bundle, allTriple) ->
+                Triple(filtered, range, Pair(start, end)) to Triple(transactions, reminders, expiringSoon) to Pair(txItems, allItems)
+            }.onEach { (bundlePair, itemsPair) ->
+                val (bundle, allTriple) = bundlePair
                 val (filtered, range, bounds) = bundle
                 val (allTx, reminders, expiringItems) = allTriple
+                val (allTxItems, allItems) = itemsPair
                 try {
                     // #region agent log
                     DebugLogger.log(
@@ -146,6 +166,26 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     .filter { it.type == "EXPENSE" }
                     .filterNot { isSettlementPayment(it) }
                     .sumOf { it.amount }
+
+                // COGS (stock cost) = sum over SALE line-items of (costPrice × qty).
+                // - For unit=PCS: qty is pieces, costPrice is per piece/packet.
+                // - For unit=KG:  qty is kilograms, costPrice is per KG (loose items).
+                // NOTE: costPrice is taken from current `items` table (not snapshot-at-sale).
+                val txTypeById: Map<Int, String> = allTx.associate { it.id to it.type }
+                val costByItemId: Map<Int, Double> = allItems.associate { it.id to it.costPrice }
+                val cogs = allTxItems
+                    .asSequence()
+                    .filter { txTypeById[it.transactionId] == "SALE" }
+                    .sumOf { line ->
+                        val itemId = line.itemId
+                        val unitCost = if (itemId != null) (costByItemId[itemId] ?: 0.0) else 0.0
+                        // Backward-compat: if any legacy GRAM entries exist, treat qty as grams -> kg.
+                        val multiplierQty = when (line.unit.uppercase()) {
+                            "GRAM", "G", "GM", "GMS", "GRAMS" -> (line.qty / 1000.0)
+                            else -> line.qty
+                        }
+                        unitCost * multiplierQty
+                    }
 
                 val daySpan = ((bounds.second - bounds.first).coerceAtLeast(0L) / (24L * 60L * 60L * 1000L)).toInt()
                 val grouped = if (daySpan >= 62) {
@@ -205,8 +245,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
                 _state.value = _state.value.copy(
                     revenue = revenue,
+                    cogs = cogs,
                     expense = expense,
-                    netProfit = revenue - expense,
+                    // Profit includes stock cost: Profit = Revenue - COGS - Expense
+                    netProfit = revenue - cogs - expense,
                     cashInHand = cashInHand,
                     salesChangePercent = pct,
                     salesChangeAmount = delta,
@@ -224,7 +266,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     DebugLogger.log(
                         "DashboardViewModel.kt:72",
                         "State updated",
-                        mapOf("revenue" to revenue, "expense" to expense, "netProfit" to (revenue - expense), "range" to range),
+                        mapOf("revenue" to revenue, "cogs" to cogs, "expense" to expense, "netProfit" to (revenue - cogs - expense), "range" to range),
                         "H5"
                     )
                 } catch (e: Exception) {

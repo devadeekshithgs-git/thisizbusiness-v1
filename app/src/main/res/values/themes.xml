@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.thisizbusiness" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- UCrop activity theme (requires AppCompat) -->
+    <style name="Theme.UCrop" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#1B5E20</item>
+        <item name="colorPrimaryDark">#0D3F13</item>
+        <item name="colorAccent">#4CAF50</item>
+        <item name="android:statusBarColor">#0D3F13</item>
+    </style>
 </resources>

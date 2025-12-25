@@ -35,7 +35,7 @@ data class EditableGstr1Invoice(
 data class EditableGstr1LineItem(
     val lineId: Int,
     val itemName: String,
-    val qty: Int,
+    val qty: Double,
     val unit: String,
     val hsnCode: String = "",
     val gstRate: Double = 0.0,
@@ -56,13 +56,30 @@ data class Gstr1HsnSummaryRow(
 )
 
 data class Gstr1ValidationIssue(
+    val code: Code,
     val severity: Severity = Severity.Error,
     val message: String,
     val txId: Int? = null,
     val lineId: Int? = null
 ) {
     enum class Severity { Error, Warning }
+    enum class Code {
+        BUSINESS_GSTIN_MISSING,
+        BUSINESS_GSTIN_INVALID,
+        BUSINESS_LEGAL_NAME_MISSING,
+        BUSINESS_STATE_CODE_MISSING,
+        INVOICE_NUMBER_MISSING,
+        INVOICE_NUMBER_DUPLICATE,
+        INVOICE_PLACE_OF_SUPPLY_MISSING,
+        INVOICE_B2B_RECIPIENT_GSTIN_MISSING,
+        INVOICE_B2B_RECIPIENT_GSTIN_INVALID,
+        LINE_HSN_MISSING,
+        LINE_GST_RATE_INVALID,
+        LINE_TAXABLE_VALUE_MISSING
+    }
 }
+
+
 
 
 

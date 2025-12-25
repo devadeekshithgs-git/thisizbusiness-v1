@@ -13,7 +13,7 @@ data class ItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val name: String,
     val price: Double, // Renamed from sellingPrice
-    // Loose items (sold by weight): qty is interpreted in GRAMS in billing/transactions.
+    // Loose items (sold by weight): quantities are stored in KG across the app.
     val isLoose: Boolean = false,
     val pricePerKg: Double = 0.0,
     // For loose items only: stock is stored in KG (can be fractional).
@@ -32,6 +32,9 @@ data class ItemEntity(
     val vendorId: Int?,
     val imageUri: String? = null,
     val expiryDateMillis: Long? = null, // Optional expiry date for alerts
+    // Optional: when receiving/purchasing stock, items are often added in batches (e.g., 12/24).
+    // Used for quick +/- stock adjustment in the inventory list.
+    val batchSize: Int? = null,
     var isDeleted: Boolean = false // For soft delete
 )
 
@@ -42,6 +45,8 @@ data class PartyEntity(
     val phone: String,
     val type: String, // "CUSTOMER" or "VENDOR"
     val gstNumber: String? = null,
+    // Optional UPI VPA for payments (useful for vendors and for sharing payment links).
+    val upiId: String? = null,
     // GST reporting: 2-digit state code (e.g., 29 for Karnataka). Optional.
     val stateCode: Int? = null,
     val balance: Double = 0.0,
@@ -86,8 +91,8 @@ data class TransactionItemEntity(
     val transactionId: Int,
     val itemId: Int?,
     val itemNameSnapshot: String, // Snapshot in case item is deleted/changed
-    val qty: Int,
-    val unit: String = "PCS", // PCS | GRAM
+    val qty: Double,
+    val unit: String = "PCS", // PCS | KG
     val price: Double, // Selling price at time of sale
     // GST reporting snapshots/overrides (may be 0 until user reviews in GST Reports).
     val hsnCodeSnapshot: String? = null,

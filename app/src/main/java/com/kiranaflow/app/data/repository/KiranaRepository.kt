@@ -181,7 +181,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
                         transactionId = 0,
                         itemId = item.id,
                         itemNameSnapshot = item.name,
-                        qty = qty,
+                        qty = qty.toDouble(),
                         price = item.price
                     )
                 }
@@ -264,11 +264,39 @@ class KiranaRepository(private val db: KiranaDatabase) {
     // --- Actions ---
 
     /**
-     * Insert item into Room and return a copy with the generated id.
-     * Kept as a separate method so UIs can create-and-use the new Item immediately (e.g., billing quick-add).
+     * Result of trying to add an item.
      */
-    suspend fun addItemReturning(item: ItemEntity): ItemEntity {
-        val id = itemDao.insertItem(item).toInt()
+    sealed interface ItemAddResult {
+        data class Success(val item: ItemEntity) : ItemAddResult
+        data class DuplicateName(val existingName: String) : ItemAddResult
+        data class DuplicateBarcode(val existingName: String, val barcode: String) : ItemAddResult
+    }
+
+    /**
+     * Insert item into Room and return a copy with the generated id.
+     * Checks for duplicate name (case-insensitive) and barcode before inserting.
+     * Returns an ItemAddResult indicating success or duplicate detection.
+     */
+    suspend fun addItemReturning(item: ItemEntity): ItemAddResult {
+        val cleanName = item.name.trim()
+        val cleanBarcode = item.barcode?.trim()?.ifBlank { null }
+
+        // Check for duplicate name (case-insensitive)
+        val existingByName = itemDao.getItemByName(cleanName)
+        if (existingByName != null && existingByName.id != item.id) {
+            return ItemAddResult.DuplicateName(existingByName.name)
+        }
+
+        // Check for duplicate barcode (if provided)
+        if (!cleanBarcode.isNullOrBlank()) {
+            val existingByBarcode = itemDao.getItemByBarcode(cleanBarcode)
+            if (existingByBarcode != null && existingByBarcode.id != item.id) {
+                return ItemAddResult.DuplicateBarcode(existingByBarcode.name, cleanBarcode)
+            }
+        }
+
+        val itemToInsert = item.copy(name = cleanName, barcode = cleanBarcode)
+        val id = itemDao.insertItem(itemToInsert).toInt()
         runCatching {
             enqueue(
                 PendingSyncOp(
@@ -277,29 +305,34 @@ class KiranaRepository(private val db: KiranaDatabase) {
                     op = SyncOpType.UPSERT,
                     payload = JSONObject()
                         .put("id", id)
-                        .put("name", item.name)
+                        .put("name", cleanName)
                         .put("price", item.price)
                         .put("stock", item.stock)
                         .put("category", item.category)
                         .put("costPrice", item.costPrice)
                         .put("gstPercentage", item.gstPercentage)
+                        .put("hsnCode", itemToInsert.hsnCode)
                         .put("reorderPoint", item.reorderPoint)
                         .put("vendorId", item.vendorId)
                         .put("rackLocation", item.rackLocation)
-                        .put("barcode", item.barcode)
+                        .put("barcode", cleanBarcode)
                         .put("imageUri", item.imageUri)
                         .put("expiryDateMillis", item.expiryDateMillis)
+                        .put("batchSize", item.batchSize)
                 )
             )
         }
-        return item.copy(id = id)
+        return ItemAddResult.Success(itemToInsert.copy(id = id))
     }
 
+    /**
+     * Legacy addItem that ignores duplicate results (for backward compatibility).
+     */
     suspend fun addItem(item: ItemEntity) {
         addItemReturning(item)
     }
     
-    suspend fun updateItem(item: ItemEntity) {
+    suspend fun updateItem(item: ItemEntity): Int {
         val id = itemDao.insertItem(item).toInt() // Replace
         runCatching {
             enqueue(
@@ -315,15 +348,18 @@ class KiranaRepository(private val db: KiranaDatabase) {
                         .put("category", item.category)
                         .put("costPrice", item.costPrice)
                         .put("gstPercentage", item.gstPercentage)
+                        .put("hsnCode", item.hsnCode)
                         .put("reorderPoint", item.reorderPoint)
                         .put("vendorId", item.vendorId)
                         .put("rackLocation", item.rackLocation)
                         .put("barcode", item.barcode)
                         .put("imageUri", item.imageUri)
                         .put("expiryDateMillis", item.expiryDateMillis)
+                        .put("batchSize", item.batchSize)
                 )
             )
         }
+        return id
     }
     
     suspend fun deleteItem(item: ItemEntity) {
@@ -351,8 +387,19 @@ class KiranaRepository(private val db: KiranaDatabase) {
         }
     }
 
-    suspend fun addParty(party: PartyEntity) {
-        val id = partyDao.insertParty(party).toInt()
+    /**
+     * Add a party only if no duplicate exists (by phone + type).
+     * Returns the inserted ID, or null if a duplicate exists.
+     */
+    suspend fun addParty(party: PartyEntity): Int? {
+        val cleanPhone = normalizePhoneDigits(party.phone)
+        
+        // Check for duplicate by phone + type
+        val existing = partyDao.findPartyByPhoneAndType(cleanPhone, party.type)
+        if (existing != null) return null // Duplicate exists
+        
+        val partyToInsert = party.copy(phone = cleanPhone)
+        val id = partyDao.insertParty(partyToInsert).toInt()
         runCatching {
             enqueue(
                 PendingSyncOp(
@@ -362,19 +409,26 @@ class KiranaRepository(private val db: KiranaDatabase) {
                     payload = JSONObject()
                         .put("id", id)
                         .put("name", party.name)
-                        .put("phone", party.phone)
+                        .put("phone", cleanPhone)
                         .put("type", party.type)
                         .put("gstNumber", party.gstNumber)
+                        .put("upiId", party.upiId)
                         .put("balance", party.balance)
                 )
             )
         }
+        return id
     }
 
     suspend fun addCustomer(name: String, phone: String): PartyEntity? {
         val cleanName = name.trim()
-        val cleanPhone = phone.trim()
+        val cleanPhone = normalizePhoneDigits(phone)
         if (cleanName.isBlank() || cleanPhone.isBlank()) return null
+        
+        // Check for duplicate by phone
+        val existing = partyDao.findPartyByPhoneAndType(cleanPhone, "CUSTOMER")
+        if (existing != null) return existing // Return existing instead of creating duplicate
+        
         val id = partyDao.insertParty(
             PartyEntity(
                 name = cleanName,
@@ -462,9 +516,14 @@ class KiranaRepository(private val db: KiranaDatabase) {
 
     suspend fun addVendor(name: String, phone: String, gstNumber: String?): PartyEntity? {
         val cleanName = name.trim()
-        val cleanPhone = phone.trim()
+        val cleanPhone = normalizePhoneDigits(phone)
         val cleanGst = gstNumber?.trim()?.ifBlank { null }
         if (cleanName.isBlank() || cleanPhone.isBlank()) return null
+        
+        // Check for duplicate by phone
+        val existing = partyDao.findPartyByPhoneAndType(cleanPhone, "VENDOR")
+        if (existing != null) return existing // Return existing instead of creating duplicate
+        
         val id = partyDao.insertParty(
             PartyEntity(
                 name = cleanName,
@@ -506,6 +565,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
                         .put("phone", party.phone)
                         .put("type", party.type)
                         .put("gstNumber", party.gstNumber)
+                        .put("upiId", party.upiId)
                         .put("balance", party.balance)
                 )
             )
@@ -651,11 +711,11 @@ class KiranaRepository(private val db: KiranaDatabase) {
 
     // Process Sale/Checkout
     suspend fun processSale(
-        items: List<Pair<ItemEntity, Int>>, // Item, Qty
+        items: List<Pair<ItemEntity, Double>>, // Item, Qty (PCS as whole numbers; loose items in KG)
         paymentMode: String,
         customerId: Int?,
         totalAmount: Double
-    ) {
+    ): Int {
         val now = System.currentTimeMillis()
         val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(now))
         
@@ -676,7 +736,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
                 itemId = item.id,
                 itemNameSnapshot = item.name,
                 qty = qty,
-                unit = if (item.isLoose) "GRAM" else "PCS",
+                unit = if (item.isLoose) "KG" else "PCS",
                 price = item.price
             )
         }
@@ -685,10 +745,10 @@ class KiranaRepository(private val db: KiranaDatabase) {
             val id = transactionDao.insertSale(transaction, txItems)
             items.forEach { (item, qty) ->
                 if (item.isLoose) {
-                    // qty is grams; stock is stored in KG for loose items.
-                    itemDao.decreaseStockKg(item.id, qty / 1000.0)
+                    // qty is KG; stock is stored in KG for loose items.
+                    itemDao.decreaseStockKg(item.id, qty)
                 } else {
-                    itemDao.decreaseStock(item.id, qty)
+                    itemDao.decreaseStock(item.id, qty.toInt())
                 }
             }
             if (customerId != null && paymentMode == "CREDIT") {
@@ -705,7 +765,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
                             .put("itemId", it.id)
                             .put("name", it.name)
                             .put("qty", qty)
-                            .put("unit", if (it.isLoose) "GRAM" else "PCS")
+                            .put("unit", if (it.isLoose) "KG" else "PCS")
                             .put("price", it.price)
                     )
                 }
@@ -718,6 +778,8 @@ class KiranaRepository(private val db: KiranaDatabase) {
                 .put("items", lines)
             enqueue(PendingSyncOp(SyncEntityType.TRANSACTION, txId.toString(), SyncOpType.CREATE_SALE, payload))
         }
+
+        return txId
     }
 
     suspend fun recordPayment(party: PartyEntity, amount: Double, mode: String) {
@@ -956,7 +1018,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
                 updated++
             } else {
                 val unit = it.unitPrice ?: 0.0
-                addItemReturning(
+                val result = addItemReturning(
                     ItemEntity(
                         name = name,
                         price = unit, // default selling price = unit cost (can be edited later)
@@ -974,7 +1036,10 @@ class KiranaRepository(private val db: KiranaDatabase) {
                         isDeleted = false
                     )
                 )
-                added++
+                if (result is ItemAddResult.Success) {
+                    added++
+                }
+                // If duplicate, skip silently (already exists in inventory)
             }
         }
 
@@ -1078,7 +1143,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
             } else {
                 val cost = r.costPrice ?: 0.0
                 val sell = r.sellPrice ?: cost
-                addItemReturning(
+                val result = addItemReturning(
                     ItemEntity(
                         name = name,
                         price = sell,
@@ -1096,7 +1161,10 @@ class KiranaRepository(private val db: KiranaDatabase) {
                         isDeleted = false
                     )
                 )
-                added++
+                if (result is ItemAddResult.Success) {
+                    added++
+                }
+                // If duplicate, skip silently (already exists in inventory)
             }
         }
 
@@ -1168,7 +1236,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
     private data class PurchaseLine(
         val itemId: Int?,
         val name: String,
-        val qty: Int,
+        val qty: Double,
         val unit: String,
         val unitPrice: Double,
         val lineTotal: Double
@@ -1177,29 +1245,37 @@ class KiranaRepository(private val db: KiranaDatabase) {
     private suspend fun BillOcrParser.ParsedBillItem.toPurchaseLineOrNull(): PurchaseLine? {
         val cleanName = name.trim()
         if (cleanName.isBlank()) return null
-        val qtyInt = qty
-        if (qtyInt <= 0) return null
-        val unitPrice = unitPrice ?: run {
-            val t = total
-            if (t != null && qtyInt > 0) t / qtyInt else null
-        } ?: return null
-        val lineTotal = total ?: (unitPrice * qtyInt)
-        if (lineTotal <= 0.0) return null
+        val qtyNum = (qtyRaw ?: qty.toDouble())
+        if (qtyNum <= 0.0) return null
 
-        val unitNorm = when (unit?.uppercase()) {
-            "KG" -> "KG"
-            "G" -> "G"
-            "GRAM" -> "G"
-            else -> "PCS"
+        val unitRaw = unit?.trim()?.uppercase()
+        val isWeight = unitRaw in setOf("KG", "KGS", "G", "GM", "GMS", "GRAM", "GRAMS")
+        val unitNorm = if (isWeight) "KG" else "PCS"
+        val qtyNorm = if (isWeight) {
+            when (unitRaw) {
+                "KG", "KGS" -> qtyNum
+                else -> qtyNum / 1000.0 // grams -> kg
+            }
+        } else {
+            qtyNum
         }
+        if (qtyNorm <= 0.0) return null
+
+        val unitPriceNorm = unitPrice ?: run {
+            val t = total
+            if (t != null && qtyNorm > 0.0) t / qtyNorm else null
+        } ?: return null
+
+        val lineTotal = total ?: (unitPriceNorm * qtyNorm)
+        if (lineTotal <= 0.0) return null
 
         val itemId = runCatching { itemDao.getItemByName(cleanName)?.id }.getOrNull()
         return PurchaseLine(
             itemId = itemId,
             name = cleanName,
-            qty = qtyInt,
+            qty = qtyNorm,
             unit = unitNorm,
-            unitPrice = unitPrice,
+            unitPrice = unitPriceNorm,
             lineTotal = lineTotal
         )
     }
