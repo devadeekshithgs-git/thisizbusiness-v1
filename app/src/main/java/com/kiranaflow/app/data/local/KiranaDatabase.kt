@@ -13,16 +13,25 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PartyEntity::class,
         TransactionEntity::class,
         TransactionItemEntity::class,
+        UserEntity::class,
+        TransactionAdjustmentEntity::class,
+        TransactionAdjustmentItemEntity::class,
+        StockMovementEntity::class,
+        TransactionEditHistoryEntity::class,
         ReminderEntity::class,
         OutboxEntity::class
     ],
-    version = 16, // v16: items.batchSize (optional) for quick stock +/- in inventory
+    version = 17, // v17: controlled transaction edit + audit tables
     exportSchema = false
 )
 abstract class KiranaDatabase : RoomDatabase() {
     abstract fun itemDao(): ItemDao
     abstract fun partyDao(): PartyDao
     abstract fun transactionDao(): TransactionDao
+    abstract fun userDao(): UserDao
+    abstract fun transactionAdjustmentDao(): TransactionAdjustmentDao
+    abstract fun stockMovementDao(): StockMovementDao
+    abstract fun transactionEditHistoryDao(): TransactionEditHistoryDao
     abstract fun reminderDao(): ReminderDao
     abstract fun outboxDao(): OutboxDao
 
@@ -165,6 +174,101 @@ abstract class KiranaDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // transactions: controlled edit fields
+                db.execSQL("ALTER TABLE transactions ADD COLUMN status TEXT NOT NULL DEFAULT 'POSTED'")
+                db.execSQL("ALTER TABLE transactions ADD COLUMN gstFiledPeriod TEXT")
+                db.execSQL("ALTER TABLE transactions ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+
+                // users
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        name TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        pin TEXT,
+                        isActive INTEGER NOT NULL DEFAULT 1
+                    )
+                    """.trimIndent()
+                )
+
+                // transaction_adjustments
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transaction_adjustments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        originalTransactionId INTEGER NOT NULL,
+                        adjustmentType TEXT NOT NULL,
+                        reason TEXT NOT NULL,
+                        userId INTEGER,
+                        createdAt INTEGER NOT NULL,
+                        netAmountChange REAL NOT NULL,
+                        gstType TEXT,
+                        FOREIGN KEY(originalTransactionId) REFERENCES transactions(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_transaction_adjustments_originalTransactionId ON transaction_adjustments(originalTransactionId)")
+
+                // transaction_adjustment_items
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transaction_adjustment_items (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        adjustmentId INTEGER NOT NULL,
+                        itemId INTEGER,
+                        itemNameSnapshot TEXT NOT NULL,
+                        quantityDelta REAL NOT NULL,
+                        priceDelta REAL NOT NULL,
+                        taxDelta REAL NOT NULL,
+                        FOREIGN KEY(adjustmentId) REFERENCES transaction_adjustments(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_transaction_adjustment_items_adjustmentId ON transaction_adjustment_items(adjustmentId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_transaction_adjustment_items_itemId ON transaction_adjustment_items(itemId)")
+
+                // stock_movements
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS stock_movements (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        itemId INTEGER NOT NULL,
+                        delta REAL NOT NULL,
+                        source TEXT NOT NULL,
+                        transactionId INTEGER,
+                        adjustmentId INTEGER,
+                        userId INTEGER,
+                        reason TEXT,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_stock_movements_itemId ON stock_movements(itemId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_stock_movements_transactionId ON stock_movements(transactionId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_stock_movements_adjustmentId ON stock_movements(adjustmentId)")
+
+                // transaction_edit_history
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transaction_edit_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        transactionId INTEGER NOT NULL,
+                        fieldChanged TEXT NOT NULL,
+                        oldValue TEXT,
+                        newValue TEXT,
+                        userId INTEGER,
+                        reason TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_transaction_edit_history_transactionId ON transaction_edit_history(transactionId)")
+            }
+        }
+
         fun getDatabase(context: Context): KiranaDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -180,7 +284,8 @@ abstract class KiranaDatabase : RoomDatabase() {
                     MIGRATION_12_13,
                     MIGRATION_13_14,
                     MIGRATION_14_15,
-                    MIGRATION_15_16
+                    MIGRATION_15_16,
+                    MIGRATION_16_17
                 )
                 .fallbackToDestructiveMigration()
                 .build()

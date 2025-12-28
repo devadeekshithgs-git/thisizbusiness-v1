@@ -3,7 +3,6 @@ package com.kiranaflow.app.util
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import com.kiranaflow.app.BuildConfig
 import com.kiranaflow.app.data.local.AppPrefsStore
 import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.local.OutboxDao
@@ -198,7 +197,7 @@ class StubSyncEngine(
             return SyncResult(0, 0, 0, "Nothing to sync")
         }
 
-        val backendConfigured = BuildConfig.BACKEND_BASE_URL.isNotBlank()
+        val backendConfigured = BackendConfig.backendBaseUrl.isNotBlank()
 
         // Use singleton HttpRemoteApi for connection pooling
         val httpRemote: HttpRemoteApi? = if (backendConfigured) {
@@ -328,8 +327,8 @@ class StubSyncEngine(
     
     private fun getOrCreateHttpRemote(): HttpRemoteApi {
         return cachedHttpRemote ?: HttpRemoteApi(
-            baseUrl = BuildConfig.BACKEND_BASE_URL,
-            apiKey = BuildConfig.BACKEND_API_KEY.trim().ifBlank { null }
+            baseUrl = BackendConfig.backendBaseUrl,
+            apiKey = BackendConfig.backendApiKey.trim().ifBlank { null }
         ).also { cachedHttpRemote = it }
     }
 }

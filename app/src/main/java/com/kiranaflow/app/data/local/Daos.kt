@@ -11,6 +11,9 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE barcode = :barcode AND isDeleted = 0 LIMIT 1")
     suspend fun getItemByBarcode(barcode: String): ItemEntity?
 
+    @Query("SELECT * FROM items WHERE id = :id LIMIT 1")
+    suspend fun getItemById(id: Int): ItemEntity?
+
     @Query("SELECT * FROM items WHERE LOWER(name) = LOWER(:name) AND isDeleted = 0 LIMIT 1")
     suspend fun getItemByName(name: String): ItemEntity?
 
@@ -39,6 +42,20 @@ interface ItemDao {
 
     @Query("UPDATE items SET stockKg = stockKg + :qtyKg WHERE id = :itemId")
     suspend fun increaseStockKg(itemId: Int, qtyKg: Double)
+
+    /**
+     * Safe (non-negative) stock deduction.
+     * Returns number of rows affected (0 => insufficient stock or missing item).
+     */
+    @Query("UPDATE items SET stock = stock - :qty WHERE id = :itemId AND stock >= :qty")
+    suspend fun decreaseStockSafe(itemId: Int, qty: Int): Int
+
+    /**
+     * Safe (non-negative) loose stock deduction (KG).
+     * Returns number of rows affected (0 => insufficient stock or missing item).
+     */
+    @Query("UPDATE items SET stockKg = stockKg - :qtyKg WHERE id = :itemId AND stockKg >= :qtyKg")
+    suspend fun decreaseStockKgSafe(itemId: Int, qtyKg: Double): Int
 }
 
 @Dao
@@ -136,6 +153,33 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE id = :id LIMIT 1")
     fun getTransactionById(id: Int): Flow<TransactionEntity?>
 
+    @Query("UPDATE transactions SET status = :status, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateTransactionStatus(id: Int, status: String, updatedAt: Long)
+
+    @Query(
+        """
+        UPDATE transactions
+        SET paymentMode = :paymentMode,
+            title = :title,
+            amount = :amount,
+            gstFiledPeriod = :gstFiledPeriod,
+            updatedAt = :updatedAt
+        WHERE id = :id
+        """
+    )
+    suspend fun updateTransactionFields(
+        id: Int,
+        paymentMode: String,
+        title: String,
+        amount: Double,
+        gstFiledPeriod: String?,
+        updatedAt: Long
+    )
+
+    @Transaction
+    @Query("SELECT * FROM transactions WHERE id = :id LIMIT 1")
+    suspend fun getTransactionWithItems(id: Int): TransactionWithItems?
+
     @Query("SELECT * FROM transactions WHERE customerId = :customerId OR vendorId = :customerId ORDER BY date DESC")
     fun getTransactionsForParty(customerId: Int): Flow<List<TransactionEntity>>
 
@@ -150,6 +194,28 @@ interface TransactionDao {
 
     @Query("SELECT * FROM transaction_items WHERE transactionId = :transactionId")
     fun getItemsForTransaction(transactionId: Int): Flow<List<TransactionItemEntity>>
+
+    @Query(
+        """
+        UPDATE transaction_items
+        SET qty = :qty,
+            price = :price,
+            taxableValue = :taxableValue,
+            cgstAmount = :cgstAmount,
+            sgstAmount = :sgstAmount,
+            igstAmount = :igstAmount
+        WHERE id = :lineId
+        """
+    )
+    suspend fun updateTransactionLineEditableFields(
+        lineId: Int,
+        qty: Double,
+        price: Double,
+        taxableValue: Double,
+        cgstAmount: Double,
+        sgstAmount: Double,
+        igstAmount: Double
+    )
 
     @Query("DELETE FROM transactions WHERE id IN (:ids)")
     suspend fun deleteTransactionsByIds(ids: List<Int>)

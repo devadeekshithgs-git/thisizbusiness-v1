@@ -1,11 +1,13 @@
 package com.kiranaflow.app.ui.screens.inventory
 
 import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -51,9 +53,13 @@ import com.kiranaflow.app.ui.theme.GrayBg
 import com.kiranaflow.app.ui.theme.TextPrimary
 import com.kiranaflow.app.ui.theme.TextSecondary
 import com.kiranaflow.app.ui.theme.White
+import com.kiranaflow.app.util.DocumentScannerHelper
 import com.kiranaflow.app.util.InventoryImportDemoGenerator
 import com.kiranaflow.app.util.gst.GstFileExporter
 import java.io.File
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import android.app.Activity
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -64,6 +70,8 @@ fun BillScannerScreen(
 ) {
     val context = LocalContext.current
     val cr = context.contentResolver
+    val scope = rememberCoroutineScope()
+    var pendingDocScanIntentSender by remember { mutableStateOf<IntentSender?>(null) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         if (ok) {
@@ -71,6 +79,14 @@ fun BillScannerScreen(
         }
         pendingCameraUri = null
     }
+
+    val docScannerLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+            val out = DocumentScannerHelper.parseResult(res.data)
+            val uri = out?.pageUris?.firstOrNull() ?: out?.pdfUri
+            if (uri != null) onBillDocumentSelected(uri)
+            pendingDocScanIntentSender = null
+        }
 
     val billPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -149,6 +165,27 @@ fun BillScannerScreen(
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Vendor Bill OCR", fontWeight = FontWeight.Bold, color = TextPrimary)
                         Text("Supports: Camera, JPG/PNG/PDF", fontSize = 12.sp, color = TextSecondary)
+                        KiranaButton(
+                            text = "Scan bill (document scanner)",
+                            onClick = {
+                                val act = context as? Activity
+                                if (act == null) {
+                                    Toast.makeText(context, "Scanner unavailable", Toast.LENGTH_SHORT).show()
+                                    return@KiranaButton
+                                }
+                                scope.launch {
+                                    val sender = runCatching { DocumentScannerHelper.getStartScanIntent(act) }.getOrNull()
+                                    if (sender == null) {
+                                        Toast.makeText(context, "Scanner unavailable", Toast.LENGTH_SHORT).show()
+                                        return@launch
+                                    }
+                                    pendingDocScanIntentSender = sender
+                                    docScannerLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                                }
+                            },
+                            icon = Icons.Default.FileOpen,
+                            colors = ButtonDefaults.buttonColors(containerColor = Blue600, contentColor = BgPrimary)
+                        )
                         KiranaButton(
                             text = "Scan bill (camera)",
                             onClick = {

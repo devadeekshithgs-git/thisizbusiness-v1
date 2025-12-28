@@ -17,6 +17,9 @@ data class AppPrefs(
     val lastSyncAttemptAtMillis: Long? = null,
     val lastSyncMessage: String? = null,
     val lastBackupAtMillis: Long? = null,
+    // Scan feedback defaults match POS expectations: enabled by default, user-configurable.
+    val scanBeepEnabled: Boolean = true,
+    val scanVibrationEnabled: Boolean = true,
     /**
      * If > currentTimeMillis, financial numbers may be revealed.
      * When 0 or expired, show privacy overlay (masked values).
@@ -34,6 +37,8 @@ class AppPrefsStore(private val context: Context) {
         val lastSyncAttemptAtMillis = longPreferencesKey("last_sync_attempt_at_millis")
         val lastSyncMessage = stringPreferencesKey("last_sync_message")
         val lastBackupAtMillis = longPreferencesKey("last_backup_at_millis")
+        val scanBeepEnabled = booleanPreferencesKey("scan_beep_enabled")
+        val scanVibrationEnabled = booleanPreferencesKey("scan_vibration_enabled")
         val privacyUnlockedUntilMillis = longPreferencesKey("privacy_unlocked_until_millis")
     }
 
@@ -45,6 +50,8 @@ class AppPrefsStore(private val context: Context) {
             lastSyncAttemptAtMillis = p[Keys.lastSyncAttemptAtMillis],
             lastSyncMessage = p[Keys.lastSyncMessage],
             lastBackupAtMillis = p[Keys.lastBackupAtMillis],
+            scanBeepEnabled = p[Keys.scanBeepEnabled] ?: true,
+            scanVibrationEnabled = p[Keys.scanVibrationEnabled] ?: true,
             privacyUnlockedUntilMillis = p[Keys.privacyUnlockedUntilMillis] ?: 0L
         )
     }
@@ -81,6 +88,14 @@ class AppPrefsStore(private val context: Context) {
 
     suspend fun setLastBackupAt(atMillis: Long) {
         context.appPrefsDataStore.edit { it[Keys.lastBackupAtMillis] = atMillis }
+    }
+
+    suspend fun setScanBeepEnabled(enabled: Boolean) {
+        context.appPrefsDataStore.edit { it[Keys.scanBeepEnabled] = enabled }
+    }
+
+    suspend fun setScanVibrationEnabled(enabled: Boolean) {
+        context.appPrefsDataStore.edit { it[Keys.scanVibrationEnabled] = enabled }
     }
 
     suspend fun setPrivacyUnlockedUntil(untilMillis: Long) {

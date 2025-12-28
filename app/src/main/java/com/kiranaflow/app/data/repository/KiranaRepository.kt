@@ -22,11 +22,17 @@ import com.kiranaflow.app.sync.SyncOpType
 import kotlinx.coroutines.flow.map
 import com.kiranaflow.app.util.BillOcrParser
 import com.kiranaflow.app.util.ImmediateSyncManager
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class KiranaRepository(private val db: KiranaDatabase) {
     private val itemDao = db.itemDao()
     private val partyDao = db.partyDao()
     private val transactionDao = db.transactionDao()
+    private val userDao = db.userDao()
+    private val adjustmentDao = db.transactionAdjustmentDao()
+    private val stockMovementDao = db.stockMovementDao()
+    private val editHistoryDao = db.transactionEditHistoryDao()
     private val reminderDao = db.reminderDao()
     private val outboxDao = db.outboxDao()
     private val syncQueue = PendingSyncQueue(outboxDao)
@@ -49,6 +55,14 @@ class KiranaRepository(private val db: KiranaDatabase) {
     val vendors: Flow<List<PartyEntity>> = partyDao.getVendors()
     val customers: Flow<List<PartyEntity>> = partyDao.getCustomers()
     val allParties: Flow<List<PartyEntity>> = partyDao.getAllParties()
+
+    /**
+     * Read-only helper for feature modules that need a one-time snapshot (e.g. scan/diff).
+     * This is additive and does not change any existing flows.
+     */
+    suspend fun allItemsSnapshot(): List<ItemEntity> = runCatching { itemDao.getAllItems().first() }.getOrElse { emptyList() }
+
+    suspend fun partySnapshotById(id: Int): PartyEntity? = runCatching { partyDao.getPartyById(id).first() }.getOrNull()
 
     suspend fun clearOutboxDone() = outboxDao.clearDone()
     suspend fun clearOutboxAll() = outboxDao.clearAll()
@@ -612,6 +626,16 @@ class KiranaRepository(private val db: KiranaDatabase) {
         return transactionDao.getTransactionById(transactionId)
     }
 
+    fun adjustmentsForTransaction(transactionId: Int): Flow<List<TransactionAdjustmentEntity>> {
+        if (transactionId <= 0) return flowOf(emptyList())
+        return adjustmentDao.adjustmentsForTransaction(transactionId)
+    }
+
+    fun editHistoryForTransaction(transactionId: Int): Flow<List<TransactionEditHistoryEntity>> {
+        if (transactionId <= 0) return flowOf(emptyList())
+        return editHistoryDao.historyForTransaction(transactionId)
+    }
+
     fun partyById(partyId: Int): Flow<PartyEntity?> {
         if (partyId <= 0) return flowOf(null)
         return partyDao.getPartyById(partyId)
@@ -645,6 +669,501 @@ class KiranaRepository(private val db: KiranaDatabase) {
                 )
             enqueue(PendingSyncOp(SyncEntityType.TRANSACTION_ITEM, transactionId.toString(), SyncOpType.UPSERT_MANY, payload))
         }
+    }
+
+    // --- Controlled transaction edit ---
+    sealed interface EditEligibility {
+        data object Allowed : EditEligibility
+        data class Blocked(val reason: String) : EditEligibility
+    }
+
+    data class TransactionLineEdit(
+        val lineId: Int,
+        val newQty: Double? = null,
+        val newUnitPrice: Double? = null
+    )
+
+    data class TransactionEditChanges(
+        val lineEdits: List<TransactionLineEdit> = emptyList(),
+        val paymentMode: String? = null,
+        val note: String? = null
+    )
+
+    sealed interface EditResult {
+        data class Success(val txId: Int) : EditResult
+        data class NotFound(val txId: Int) : EditResult
+        data class NotAllowed(val reason: String) : EditResult
+        data class StockConflict(val offendingItemIds: Set<Int>) : EditResult
+        data class InvalidInput(val reason: String) : EditResult
+    }
+
+    data class ItemAdjustment(
+        val itemId: Int?,
+        val itemNameSnapshot: String,
+        val quantityDelta: Double,
+        val priceDelta: Double = 0.0,
+        val taxDelta: Double = 0.0
+    )
+
+    sealed interface AdjustmentResult {
+        data class Success(val adjustmentId: Int) : AdjustmentResult
+        data class NotFound(val txId: Int) : AdjustmentResult
+        data class NotAllowed(val reason: String) : AdjustmentResult
+        data class StockConflict(val offendingItemIds: Set<Int>) : AdjustmentResult
+        data class InvalidInput(val reason: String) : AdjustmentResult
+    }
+
+    sealed interface VoidResult {
+        data class Success(val txId: Int) : VoidResult
+        data class NotFound(val txId: Int) : VoidResult
+        data class NotAllowed(val reason: String) : VoidResult
+    }
+
+    fun canEditTransaction(tx: TransactionEntity, userRole: String): EditEligibility {
+        val role = userRole.trim().uppercase()
+        val status = tx.status.trim().uppercase()
+
+        // GST-filed transactions: no direct edit, only adjustments.
+        if (!tx.gstFiledPeriod.isNullOrBlank()) {
+            return when (status) {
+                "FINALIZED" -> EditEligibility.Blocked("GST filed. Create adjustment (Credit/Debit Note).")
+                else -> EditEligibility.Blocked("GST filed. Transaction is locked.")
+            }
+        }
+
+        return when (status) {
+            "DRAFT" -> when (role) {
+                "OWNER", "MANAGER", "CASHIER" -> EditEligibility.Allowed
+                else -> EditEligibility.Blocked("Role not allowed")
+            }
+
+            "POSTED" -> when (role) {
+                "OWNER", "MANAGER" -> EditEligibility.Allowed
+                "CASHIER" -> EditEligibility.Blocked("Cashier can edit Draft only")
+                else -> EditEligibility.Blocked("Role not allowed")
+            }
+
+            "FINALIZED" -> EditEligibility.Blocked("Finalized. Create adjustment.")
+            "ADJUSTED" -> EditEligibility.Blocked("Adjusted. Locked.")
+            "VOIDED" -> EditEligibility.Blocked("Voided. Locked.")
+            else -> EditEligibility.Blocked("Unknown status")
+        }
+    }
+
+    private fun updateTitleWithNote(originalTitle: String, note: String?): String {
+        val cleanNote = note?.trim()?.ifBlank { null } ?: return originalTitle
+        // Minimal-change: append note once, don't try to parse existing formats.
+        // Avoid unbounded growth by replacing a trailing " • Note: ..." style if present.
+        val marker = " • Note: "
+        val base = originalTitle.substringBefore(marker)
+        return base + marker + cleanNote
+    }
+
+    private fun computeGstAmounts(taxableValue: Double, gstRate: Double): Triple<Double, Double, Double> {
+        if (gstRate <= 0.0 || taxableValue <= 0.0) return Triple(0.0, 0.0, 0.0)
+        // Default to intra-state split for now (CGST/SGST), keep IGST at 0.
+        val gstTotal = taxableValue * (gstRate / 100.0)
+        val half = gstTotal / 2.0
+        return Triple(half, half, 0.0)
+    }
+
+    private fun requireWholeNumberPcs(qty: Double): Int? {
+        if (qty.isNaN() || qty.isInfinite()) return null
+        val r = qty.roundToInt()
+        return if (abs(qty - r.toDouble()) <= 1e-6) r else null
+    }
+
+    private suspend fun logEdit(
+        txId: Int,
+        field: String,
+        oldValue: String?,
+        newValue: String?,
+        userId: Int?,
+        reason: String
+    ) {
+        editHistoryDao.insert(
+            TransactionEditHistoryEntity(
+                transactionId = txId,
+                fieldChanged = field,
+                oldValue = oldValue,
+                newValue = newValue,
+                userId = userId,
+                reason = reason,
+                createdAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    private suspend fun logStockMovement(
+        itemId: Int,
+        delta: Double,
+        source: String,
+        txId: Int?,
+        adjustmentId: Int?,
+        userId: Int?,
+        reason: String?
+    ) {
+        stockMovementDao.insertMovement(
+            StockMovementEntity(
+                itemId = itemId,
+                delta = delta,
+                source = source,
+                transactionId = txId,
+                adjustmentId = adjustmentId,
+                userId = userId,
+                reason = reason,
+                createdAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    /**
+     * Direct edit for DRAFT/POSTED:
+     * - Updates allowed fields only (qty/price/paymentMode/title-note)
+     * - Recomputes tx.amount from line-items
+     * - Applies stock delta only for SALE (inventory integrity)
+     * - Appends edit history + stock movements
+     */
+    suspend fun editTransaction(
+        txId: Int,
+        changes: TransactionEditChanges,
+        reason: String,
+        userId: Int?
+    ): EditResult {
+        val cleanReason = reason.trim()
+        if (cleanReason.isBlank()) return EditResult.InvalidInput("Reason is required")
+
+        val bundle = transactionDao.getTransactionWithItems(txId) ?: return EditResult.NotFound(txId)
+        val tx = bundle.tx
+
+        // Eligibility (direct edit only for DRAFT/POSTED)
+        val role = runCatching { userId?.let { userDao.getById(it)?.role } }.getOrNull() ?: "OWNER"
+        when (val elig = canEditTransaction(tx, role)) {
+            is EditEligibility.Blocked -> return EditResult.NotAllowed(elig.reason)
+            EditEligibility.Allowed -> Unit
+        }
+        if (tx.status.uppercase() !in setOf("DRAFT", "POSTED")) {
+            return EditResult.NotAllowed("Direct edit allowed only for Draft/Posted")
+        }
+
+        val byId = bundle.items.associateBy { it.id }
+        val edits = changes.lineEdits.filter { it.lineId > 0 }.distinctBy { it.lineId }
+
+        val offending = mutableSetOf<Int>()
+        val now = System.currentTimeMillis()
+        var committedAmount: Double = tx.amount
+        var committedPaymentMode: String = tx.paymentMode
+        var committedTitle: String = tx.title
+
+        runCatching {
+            db.withTransaction {
+                // 1) Apply line edits + stock deltas (SALE only)
+                for (e in edits) {
+                    val line = byId[e.lineId] ?: continue
+                    val oldQty = line.qty
+                    val oldPrice = line.price
+                    val newQty = (e.newQty ?: oldQty).coerceAtLeast(0.0)
+                    val newPrice = (e.newUnitPrice ?: oldPrice).coerceAtLeast(0.0)
+
+                    // Stock delta: new_qty - old_qty (for SALE, delta > 0 means more items sold => deduct more stock)
+                    if (tx.type == "SALE" && line.itemId != null) {
+                        val delta = newQty - oldQty
+                        if (delta > 0.0) {
+                            val ok = if (line.unit.uppercase() == "KG") {
+                                itemDao.decreaseStockKgSafe(line.itemId, delta) > 0
+                            } else {
+                                val pcs = requireWholeNumberPcs(delta) ?: throw IllegalArgumentException("Quantity must be whole number for PCS")
+                                itemDao.decreaseStockSafe(line.itemId, pcs) > 0
+                            }
+                            if (!ok) offending += line.itemId
+                        } else if (delta < 0.0) {
+                            // Returning stock
+                            val add = -delta
+                            if (line.unit.uppercase() == "KG") itemDao.increaseStockKg(line.itemId, add)
+                            else {
+                                val pcs = requireWholeNumberPcs(add) ?: throw IllegalArgumentException("Quantity must be whole number for PCS")
+                                itemDao.increaseStock(line.itemId, pcs)
+                            }
+                        }
+                    }
+                }
+
+                if (offending.isNotEmpty()) {
+                    // Abort the transaction (no partial stock adjustment, no edits).
+                    throw StockConflictException(offending)
+                }
+
+                // 2) Persist updated line values + recompute tx total
+                val newLines = bundle.items.map { li ->
+                    val e = edits.firstOrNull { it.lineId == li.id }
+                    if (e == null) li else li.copy(
+                        qty = (e.newQty ?: li.qty).coerceAtLeast(0.0),
+                        price = (e.newUnitPrice ?: li.price).coerceAtLeast(0.0)
+                    )
+                }
+
+                newLines.forEach { li ->
+                    val taxable = li.price * li.qty
+                    val (cgst, sgst, igst) = computeGstAmounts(taxable, li.gstRate)
+                    transactionDao.updateTransactionLineEditableFields(
+                        lineId = li.id,
+                        qty = li.qty,
+                        price = li.price,
+                        taxableValue = taxable,
+                        cgstAmount = cgst,
+                        sgstAmount = sgst,
+                        igstAmount = igst
+                    )
+                }
+
+                val newAmount = newLines.sumOf { it.price * it.qty }
+                val newPaymentMode = changes.paymentMode?.trim()?.ifBlank { tx.paymentMode } ?: tx.paymentMode
+                val newTitle = updateTitleWithNote(tx.title, changes.note)
+                committedAmount = newAmount
+                committedPaymentMode = newPaymentMode
+                committedTitle = newTitle
+                transactionDao.updateTransactionFields(
+                    id = tx.id,
+                    paymentMode = newPaymentMode,
+                    title = newTitle,
+                    amount = newAmount,
+                    gstFiledPeriod = tx.gstFiledPeriod,
+                    updatedAt = now
+                )
+
+                // 3) Append audit history + stock movements
+                if (newPaymentMode != tx.paymentMode) {
+                    logEdit(tx.id, "paymentMode", tx.paymentMode, newPaymentMode, userId, cleanReason)
+                }
+                if (newTitle != tx.title) {
+                    logEdit(tx.id, "note", tx.title, newTitle, userId, cleanReason)
+                }
+
+                for (e in edits) {
+                    val line = byId[e.lineId] ?: continue
+                    val oldQty = line.qty
+                    val oldPrice = line.price
+                    val newQty = (e.newQty ?: oldQty).coerceAtLeast(0.0)
+                    val newPrice = (e.newUnitPrice ?: oldPrice).coerceAtLeast(0.0)
+                    if (newQty != oldQty) logEdit(tx.id, "qty(lineId=${line.id})", oldQty.toString(), newQty.toString(), userId, cleanReason)
+                    if (newPrice != oldPrice) logEdit(tx.id, "price(lineId=${line.id})", oldPrice.toString(), newPrice.toString(), userId, cleanReason)
+
+                    if (tx.type == "SALE" && line.itemId != null) {
+                        val delta = newQty - oldQty
+                        if (delta != 0.0) {
+                            // Stock movement delta: +ve means increase stock, -ve means decrease stock
+                            val stockDelta = -delta // invert: sale consumes stock
+                            logStockMovement(
+                                itemId = line.itemId,
+                                delta = stockDelta,
+                                source = "EDIT",
+                                txId = tx.id,
+                                adjustmentId = null,
+                                userId = userId,
+                                reason = cleanReason
+                            )
+                        }
+                    }
+                }
+            }
+        }.getOrElse { e ->
+            val ids = (e as? StockConflictException)?.offending
+            if (!ids.isNullOrEmpty()) return EditResult.StockConflict(ids)
+            val msg = e.message?.ifBlank { null } ?: "Edit failed"
+            return EditResult.InvalidInput(msg)
+        }
+
+        // Offline-first: enqueue sync op (best-effort).
+        runCatching {
+            val payload = JSONObject()
+                .put("localId", txId)
+                .put("type", tx.type)
+                .put("paymentMode", committedPaymentMode)
+                .put("amount", committedAmount)
+                .put("title", committedTitle)
+                .put("status", tx.status)
+                .put("gstFiledPeriod", tx.gstFiledPeriod)
+                .put("updatedAt", now)
+            enqueue(PendingSyncOp(SyncEntityType.TRANSACTION, txId.toString(), SyncOpType.EDIT_TRANSACTION, payload))
+        }
+
+        return EditResult.Success(txId)
+    }
+
+    /**
+     * FINALIZED => create delta-only adjustment record (original remains unchanged).
+     */
+    suspend fun createAdjustment(
+        originalTxId: Int,
+        itemChanges: List<ItemAdjustment>,
+        reason: String,
+        userId: Int?
+    ): AdjustmentResult {
+        val cleanReason = reason.trim()
+        if (cleanReason.isBlank()) return AdjustmentResult.InvalidInput("Reason is required")
+        val bundle = transactionDao.getTransactionWithItems(originalTxId) ?: return AdjustmentResult.NotFound(originalTxId)
+        val tx = bundle.tx
+
+        // GST-filed => adjustment only (CN/DN), but still must be FINALIZED per spec.
+        if (tx.status.uppercase() != "FINALIZED") {
+            return AdjustmentResult.NotAllowed("Adjustment allowed only for Finalized")
+        }
+
+        val normalized = itemChanges.filter { it.quantityDelta != 0.0 || it.priceDelta != 0.0 || it.taxDelta != 0.0 }
+        if (normalized.isEmpty()) return AdjustmentResult.InvalidInput("No changes provided")
+
+        val netAmountChange = normalized.sumOf { (it.priceDelta * it.quantityDelta) }
+        val gstType = when {
+            netAmountChange < 0.0 -> "CREDIT_NOTE"
+            netAmountChange > 0.0 -> "DEBIT_NOTE"
+            else -> null
+        }
+
+        val offending = mutableSetOf<Int>()
+        val now = System.currentTimeMillis()
+
+        val adjId = runCatching {
+            db.withTransaction {
+                val adjRowId = adjustmentDao.insertAdjustment(
+                    TransactionAdjustmentEntity(
+                        originalTransactionId = tx.id,
+                        adjustmentType = "EDIT",
+                        reason = cleanReason,
+                        userId = userId,
+                        createdAt = now,
+                        netAmountChange = netAmountChange,
+                        gstType = gstType
+                    )
+                ).toInt()
+
+                val items = normalized.map { ch ->
+                    TransactionAdjustmentItemEntity(
+                        adjustmentId = adjRowId,
+                        itemId = ch.itemId,
+                        itemNameSnapshot = ch.itemNameSnapshot,
+                        quantityDelta = ch.quantityDelta,
+                        priceDelta = ch.priceDelta,
+                        taxDelta = ch.taxDelta
+                    )
+                }
+                adjustmentDao.insertAdjustmentItems(items)
+
+                // Inventory integrity: apply stock movements only for SALE and itemId != null
+                if (tx.type == "SALE") {
+                    normalized.forEach { ch ->
+                        val itemId = ch.itemId ?: return@forEach
+                        val delta = ch.quantityDelta
+                        val isLoose = itemDao.getItemById(itemId)?.isLoose == true
+                        if (delta > 0.0) {
+                            // More sold => deduct stock
+                            val ok = if (isLoose) {
+                                itemDao.decreaseStockKgSafe(itemId, delta) > 0
+                            } else {
+                                val pcs = requireWholeNumberPcs(delta) ?: throw IllegalArgumentException("Invalid PCS delta")
+                                itemDao.decreaseStockSafe(itemId, pcs) > 0
+                            }
+                            if (!ok) offending += itemId
+                            else logStockMovement(itemId, -delta, "ADJUSTMENT", tx.id, adjRowId, userId, cleanReason)
+                        } else if (delta < 0.0) {
+                            // Less sold => restore stock
+                            val add = -delta
+                            if (isLoose) itemDao.increaseStockKg(itemId, add)
+                            else {
+                                val pcs = requireWholeNumberPcs(add) ?: throw IllegalArgumentException("Invalid PCS delta")
+                                itemDao.increaseStock(itemId, pcs)
+                            }
+                            logStockMovement(itemId, add, "ADJUSTMENT", tx.id, adjRowId, userId, cleanReason)
+                        }
+                    }
+                }
+
+                if (offending.isNotEmpty()) throw StockConflictException(offending)
+
+                // Mark original as ADJUSTED (locked) per status table.
+                transactionDao.updateTransactionStatus(tx.id, "ADJUSTED", now)
+
+                adjRowId
+            }
+        }.getOrElse { e ->
+            val ids = (e as? StockConflictException)?.offending ?: emptySet()
+            if (ids.isNotEmpty()) return AdjustmentResult.StockConflict(ids)
+            val msg = e.message?.ifBlank { null } ?: "Adjustment failed"
+            return AdjustmentResult.InvalidInput(msg)
+        }
+
+        // Audit: record adjustment creation
+        runCatching { logEdit(tx.id, "adjustment", null, "created(id=$adjId)", userId, cleanReason) }
+
+        // Offline-first: enqueue sync op (best-effort).
+        runCatching {
+            val payload = JSONObject()
+                .put("localId", originalTxId)
+                .put("type", tx.type)
+                .put("op", "CREATE_ADJUSTMENT")
+                .put("reason", cleanReason)
+                .put("updatedAt", now)
+            enqueue(PendingSyncOp(SyncEntityType.TRANSACTION, originalTxId.toString(), SyncOpType.CREATE_ADJUSTMENT, payload))
+        }
+
+        return AdjustmentResult.Success(adjId)
+    }
+
+    suspend fun finalizeTransaction(txId: Int, userId: Int?): Boolean {
+        val bundle = transactionDao.getTransactionWithItems(txId) ?: return false
+        val tx = bundle.tx
+        if (tx.status.uppercase() !in setOf("POSTED", "DRAFT")) return false
+        val now = System.currentTimeMillis()
+        db.withTransaction {
+            transactionDao.updateTransactionStatus(tx.id, "FINALIZED", now)
+            logEdit(tx.id, "status", tx.status, "FINALIZED", userId, "Finalized")
+        }
+        runCatching {
+            val payload = JSONObject()
+                .put("localId", txId)
+                .put("type", tx.type)
+                .put("status", "FINALIZED")
+                .put("updatedAt", now)
+            enqueue(PendingSyncOp(SyncEntityType.TRANSACTION, txId.toString(), SyncOpType.FINALIZE_TRANSACTION, payload))
+        }
+        return true
+    }
+
+    suspend fun voidTransaction(txId: Int, reason: String, userId: Int?): VoidResult {
+        val cleanReason = reason.trim()
+        if (cleanReason.isBlank()) return VoidResult.NotAllowed("Reason is required")
+        val bundle = transactionDao.getTransactionWithItems(txId) ?: return VoidResult.NotFound(txId)
+        val tx = bundle.tx
+        if (tx.status.uppercase() in setOf("VOIDED", "ADJUSTED")) return VoidResult.NotAllowed("Transaction locked")
+
+        val now = System.currentTimeMillis()
+        db.withTransaction {
+            // Restore stock for SALE when voiding
+            if (tx.type == "SALE") {
+                bundle.items.forEach { li ->
+                    val itemId = li.itemId ?: return@forEach
+                    if (li.unit.uppercase() == "KG") itemDao.increaseStockKg(itemId, li.qty)
+                    else {
+                        val pcs = requireWholeNumberPcs(li.qty) ?: return@forEach
+                        itemDao.increaseStock(itemId, pcs)
+                    }
+                    logStockMovement(itemId, li.qty, "VOID", tx.id, null, userId, cleanReason)
+                }
+            }
+            transactionDao.updateTransactionStatus(tx.id, "VOIDED", now)
+            logEdit(tx.id, "status", tx.status, "VOIDED", userId, cleanReason)
+        }
+
+        runCatching {
+            val payload = JSONObject()
+                .put("localId", txId)
+                .put("type", tx.type)
+                .put("status", "VOIDED")
+                .put("reason", cleanReason)
+                .put("updatedAt", now)
+            enqueue(PendingSyncOp(SyncEntityType.TRANSACTION, txId.toString(), SyncOpType.VOID_TRANSACTION, payload))
+        }
+
+        return VoidResult.Success(txId)
     }
 
     suspend fun addReminder(type: String, refId: Int?, title: String, dueAt: Long, note: String? = null) {
@@ -710,12 +1229,19 @@ class KiranaRepository(private val db: KiranaDatabase) {
     }
 
     // Process Sale/Checkout
+    sealed interface SaleResult {
+        data class Success(val txId: Int) : SaleResult
+        data class StockConflict(val offendingItemIds: Set<Int>) : SaleResult
+    }
+
+    private class StockConflictException(val offending: Set<Int>) : RuntimeException()
+
     suspend fun processSale(
         items: List<Pair<ItemEntity, Double>>, // Item, Qty (PCS as whole numbers; loose items in KG)
         paymentMode: String,
         customerId: Int?,
         totalAmount: Double
-    ): Int {
+    ): SaleResult {
         val now = System.currentTimeMillis()
         val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(now))
         
@@ -741,20 +1267,36 @@ class KiranaRepository(private val db: KiranaDatabase) {
             )
         }
 
-        val txId = db.withTransaction {
-            val id = transactionDao.insertSale(transaction, txItems)
-            items.forEach { (item, qty) ->
-                if (item.isLoose) {
-                    // qty is KG; stock is stored in KG for loose items.
-                    itemDao.decreaseStockKg(item.id, qty)
-                } else {
-                    itemDao.decreaseStock(item.id, qty.toInt())
+        val txId = runCatching {
+            db.withTransaction {
+                val offending = mutableSetOf<Int>()
+
+                // 1) Attempt atomic stock deductions (all-or-nothing within the transaction).
+                items.forEach { (item, qty) ->
+                    val ok = if (item.isLoose) {
+                        itemDao.decreaseStockKgSafe(item.id, qty) > 0
+                    } else {
+                        val q = qty.toInt()
+                        itemDao.decreaseStockSafe(item.id, q) > 0
+                    }
+                    if (!ok) offending += item.id
                 }
+
+                if (offending.isNotEmpty()) {
+                    // Abort the transaction (no partial stock deduction, no sale insert).
+                    throw StockConflictException(offending)
+                }
+
+                // 2) Persist sale + line items only after stock is safely deducted.
+                val id = transactionDao.insertSale(transaction, txItems)
+                if (customerId != null && paymentMode == "CREDIT") {
+                    partyDao.updateBalance(customerId, totalAmount)
+                }
+                id
             }
-            if (customerId != null && paymentMode == "CREDIT") {
-                 partyDao.updateBalance(customerId, totalAmount)
-            }
-            id
+        }.getOrElse { e ->
+            val ids = (e as? StockConflictException)?.offending ?: emptySet()
+            return SaleResult.StockConflict(ids)
         }
 
         runCatching {
@@ -779,7 +1321,7 @@ class KiranaRepository(private val db: KiranaDatabase) {
             enqueue(PendingSyncOp(SyncEntityType.TRANSACTION, txId.toString(), SyncOpType.CREATE_SALE, payload))
         }
 
-        return txId
+        return SaleResult.Success(txId)
     }
 
     suspend fun recordPayment(party: PartyEntity, amount: Double, mode: String) {

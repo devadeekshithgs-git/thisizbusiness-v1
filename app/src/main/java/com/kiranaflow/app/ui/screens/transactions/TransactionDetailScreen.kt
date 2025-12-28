@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Person
@@ -51,10 +53,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
+import android.widget.Toast
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import coil.compose.AsyncImage
 import com.kiranaflow.app.data.local.KiranaDatabase
 import com.kiranaflow.app.data.local.TransactionItemEntity
 import com.kiranaflow.app.data.repository.KiranaRepository
+import com.kiranaflow.app.ui.components.dialogs.AdjustmentConfirmDialog
+import com.kiranaflow.app.ui.components.dialogs.ReasonInputDialog
+import com.kiranaflow.app.ui.components.dialogs.TransactionEditSheet
 import com.kiranaflow.app.ui.theme.BgPrimary
 import com.kiranaflow.app.ui.theme.Gray100
 import com.kiranaflow.app.ui.theme.GrayBg
@@ -78,12 +87,17 @@ fun TransactionDetailScreen(
 
     val tx by repo.transactionById(transactionId).collectAsState(initial = null)
     val items by repo.transactionItemsFor(transactionId).collectAsState(initial = emptyList())
+    val unsyncedIds by repo.unsyncedTransactionIds.collectAsState(initial = emptySet())
 
     val partyId = tx?.customerId ?: tx?.vendorId ?: 0
     val party by repo.partyById(partyId).collectAsState(initial = null)
 
     val df = remember { SimpleDateFormat("dd MMM yyyy • hh:mm a", Locale.getDefault()) }
     var showReceiptFull by remember { mutableStateOf(false) }
+    var showEditSheet by remember { mutableStateOf(false) }
+    var showFinalizedConfirm by remember { mutableStateOf(false) }
+    var showFinalizeConfirm by remember { mutableStateOf(false) }
+    var editMode by remember { mutableStateOf("DIRECT") } // DIRECT | ADJUSTMENT
 
     Column(modifier = Modifier.fillMaxSize().background(GrayBg)) {
         CenterAlignedTopAppBar(
@@ -91,6 +105,28 @@ fun TransactionDetailScreen(
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                }
+            },
+            actions = {
+                val t = tx
+                if (t != null) {
+                    if (t.status.uppercase() in setOf("DRAFT", "POSTED", "FINALIZED")) {
+                        IconButton(onClick = {
+                            if (t.status.uppercase() == "FINALIZED") {
+                                showFinalizedConfirm = true
+                            } else {
+                                editMode = "DIRECT"
+                                showEditSheet = true
+                            }
+                        }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Edit")
+                        }
+                    }
+                    if (t.status.uppercase() == "POSTED") {
+                        IconButton(onClick = { showFinalizeConfirm = true }) {
+                            Icon(Icons.Default.Done, contentDescription = "Finalize")
+                        }
+                    }
                 }
             },
             colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = BgPrimary)
@@ -114,6 +150,7 @@ fun TransactionDetailScreen(
         val isExpense = t.type == "EXPENSE"
         val sign = if (isExpense) "-" else "+"
         val amountColor = if (isExpense) LossRed else ProfitGreen
+        val adjustments by repo.adjustmentsForTransaction(t.id).collectAsState(initial = emptyList())
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -140,6 +177,18 @@ fun TransactionDetailScreen(
                             Column(horizontalAlignment = Alignment.End) {
                                 Text("PAYMENT", fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
                                 Text(if (t.paymentMode == "CREDIT") "UDHAAR" else t.paymentMode, color = TextPrimary, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                            Column {
+                                Text("STATUS", fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
+                                Text(t.status, color = TextPrimary, fontWeight = FontWeight.Bold)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("SYNC", fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
+                                Text(if (unsyncedIds.contains(t.id)) "PENDING" else "OK", color = TextPrimary, fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -245,6 +294,26 @@ fun TransactionDetailScreen(
                     }
                 }
             }
+
+            if (t.status.uppercase() == "ADJUSTED" && adjustments.isNotEmpty()) {
+                item {
+                    Text("Adjustments", fontWeight = FontWeight.Black, color = TextPrimary, fontSize = 16.sp)
+                }
+                items(adjustments, key = { it.id }) { adj ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = BgPrimary),
+                        shape = RoundedCornerShape(14.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("${adj.adjustmentType} • ${adj.gstType ?: "ADJUSTMENT"}", fontWeight = FontWeight.Bold, color = TextPrimary)
+                            Text(adj.reason, color = TextSecondary, fontSize = 12.sp)
+                            Text(df.format(Date(adj.createdAt)), color = TextSecondary, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -278,6 +347,78 @@ fun TransactionDetailScreen(
                 }
             }
         }
+    }
+
+    if (showFinalizedConfirm) {
+        AdjustmentConfirmDialog(
+            onCreateAdjustment = {
+                showFinalizedConfirm = false
+                editMode = "ADJUSTMENT"
+                showEditSheet = true
+            },
+            onCancel = { showFinalizedConfirm = false }
+        )
+    }
+
+    if (showFinalizeConfirm && tx != null) {
+        ReasonInputDialog(
+            title = "Finalize transaction?",
+            onConfirm = {
+                showFinalizeConfirm = false
+                CoroutineScope(Dispatchers.Main).launch {
+                    val ok = repo.finalizeTransaction(tx!!.id, null)
+                    Toast.makeText(context, if (ok) "Finalized" else "Cannot finalize", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onCancel = { showFinalizeConfirm = false }
+        )
+    }
+
+    if (showEditSheet && tx != null) {
+        TransactionEditSheet(
+            tx = tx!!,
+            items = items,
+            onDismiss = { showEditSheet = false },
+            onSave = { changes, reason ->
+                showEditSheet = false
+                CoroutineScope(Dispatchers.Main).launch {
+                    if (editMode == "DIRECT") {
+                        when (val r = repo.editTransaction(tx!!.id, changes, reason, null)) {
+                            is KiranaRepository.EditResult.Success -> Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show()
+                            is KiranaRepository.EditResult.StockConflict -> Toast.makeText(context, "Stock insufficient", Toast.LENGTH_SHORT).show()
+                            is KiranaRepository.EditResult.NotAllowed -> Toast.makeText(context, r.reason, Toast.LENGTH_SHORT).show()
+                            is KiranaRepository.EditResult.InvalidInput -> Toast.makeText(context, r.reason, Toast.LENGTH_SHORT).show()
+                            else -> Toast.makeText(context, "Edit failed", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        val original = tx!!
+                        val byId = items.associateBy { it.id }
+                        val deltas = changes.lineEdits.mapNotNull { e ->
+                            val li = byId[e.lineId] ?: return@mapNotNull null
+                            val newQty = e.newQty ?: li.qty
+                            val newPrice = e.newUnitPrice ?: li.price
+                            val qtyDelta = newQty - li.qty
+                            val priceDelta = newPrice - li.price
+                            if (qtyDelta == 0.0 && priceDelta == 0.0) return@mapNotNull null
+                            KiranaRepository.ItemAdjustment(
+                                itemId = li.itemId,
+                                itemNameSnapshot = li.itemNameSnapshot,
+                                quantityDelta = qtyDelta,
+                                priceDelta = priceDelta,
+                                taxDelta = 0.0
+                            )
+                        }
+                        when (val ar = repo.createAdjustment(original.id, deltas, reason, null)) {
+                            is KiranaRepository.AdjustmentResult.Success -> Toast.makeText(context, "Adjustment created", Toast.LENGTH_SHORT).show()
+                            is KiranaRepository.AdjustmentResult.StockConflict -> Toast.makeText(context, "Stock insufficient", Toast.LENGTH_SHORT).show()
+                            is KiranaRepository.AdjustmentResult.NotAllowed -> Toast.makeText(context, ar.reason, Toast.LENGTH_SHORT).show()
+                            is KiranaRepository.AdjustmentResult.InvalidInput -> Toast.makeText(context, ar.reason, Toast.LENGTH_SHORT).show()
+                            else -> Toast.makeText(context, "Adjustment failed", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        )
     }
 }
 

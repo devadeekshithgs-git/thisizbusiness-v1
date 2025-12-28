@@ -40,6 +40,7 @@ import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.util.StubSyncEngine
 import com.kiranaflow.app.util.LocalBackupManager
 import com.kiranaflow.app.util.InputFilters
+import com.kiranaflow.app.data.local.LearningStore
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.window.Dialog
@@ -68,6 +69,7 @@ fun SettingsDrawer(
     val scope = rememberCoroutineScope()
 
     var expandedShop by remember { mutableStateOf(true) }
+    var expandedScanFeedback by remember { mutableStateOf(false) }
     var expandedBackup by remember { mutableStateOf(false) }
     var expandedDev by remember { mutableStateOf(false) }
     var shopName by remember { mutableStateOf("") }
@@ -107,6 +109,10 @@ fun SettingsDrawer(
 
     val backupManager = remember(context) { LocalBackupManager(context) }
     var isBackupBusy by remember { mutableStateOf(false) }
+    // Scan feedback toggles (persisted in AppPrefsStore)
+    var scanBeepEnabled by remember { mutableStateOf(true) }
+    var scanVibrationEnabled by remember { mutableStateOf(true) }
+
     var pendingRestoreUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var showRestoreConfirm by remember { mutableStateOf(false) }
 
@@ -165,6 +171,10 @@ fun SettingsDrawer(
             legalName = settings.legalName
             businessAddress = settings.address
             businessStateCode = if (settings.stateCode == 0) "" else settings.stateCode.toString().padStart(2, '0')
+
+            // Scan feedback settings
+            scanBeepEnabled = appPrefs.scanBeepEnabled
+            scanVibrationEnabled = appPrefs.scanVibrationEnabled
         }
     }
 
@@ -414,6 +424,100 @@ fun SettingsDrawer(
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = Blue600, contentColor = BgPrimary)
                                     )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            scope.launch {
+                                                runCatching { LearningStore(context).reset() }
+                                                Toast.makeText(context, "Bill scan learning reset", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Reset bill scan learning")
+                                    }
+                                    Spacer(modifier = Modifier.height(18.dp))
+                                }
+                            }
+                        }
+
+                        item { Divider(color = Gray200) }
+
+                        // Scan Feedback
+                        item {
+                            ListItem(
+                                headlineContent = { Text("Scan Feedback", fontWeight = FontWeight.Bold, color = TextPrimary) },
+                                leadingContent = { Icon(Icons.Default.Menu, contentDescription = null, tint = TextSecondary) },
+                                trailingContent = {
+                                    Icon(
+                                        if (expandedScanFeedback) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = TextSecondary
+                                    )
+                                },
+                                modifier = Modifier.clickable { expandedScanFeedback = !expandedScanFeedback }
+                            )
+                        }
+
+                        if (expandedScanFeedback) {
+                            item {
+                                Column(
+                                    modifier = Modifier
+                                        .padding(horizontal = 18.dp)
+                                        .fillMaxWidth()
+                                ) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        "Controls the beep and vibration when a barcode scan successfully adds an item to the bill.",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        "Beep sound is automatically muted in Silent/Vibrate mode (system ringer mode).",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("Scan beep sound", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                            Text("Short POS-style confirmation beep", color = TextSecondary, fontSize = 12.sp)
+                                        }
+                                        Switch(
+                                            checked = scanBeepEnabled,
+                                            onCheckedChange = { enabled ->
+                                                scanBeepEnabled = enabled
+                                                scope.launch { appPrefsStore.setScanBeepEnabled(enabled) }
+                                            }
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(12.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("Scan vibration", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                            Text("Short 40ms haptic confirmation", color = TextSecondary, fontSize = 12.sp)
+                                        }
+                                        Switch(
+                                            checked = scanVibrationEnabled,
+                                            onCheckedChange = { enabled ->
+                                                scanVibrationEnabled = enabled
+                                                scope.launch { appPrefsStore.setScanVibrationEnabled(enabled) }
+                                            }
+                                        )
+                                    }
+
                                     Spacer(modifier = Modifier.height(18.dp))
                                 }
                             }
@@ -582,7 +686,7 @@ fun SettingsDrawer(
                                     }
 
                                     Spacer(modifier = Modifier.height(10.dp))
-                                    if (com.kiranaflow.app.BuildConfig.BACKEND_BASE_URL.isBlank()) {
+                                    if (com.kiranaflow.app.util.BackendConfig.backendBaseUrl.isBlank()) {
                                         Spacer(modifier = Modifier.height(6.dp))
                                         Text(
                                             "Supabase sync endpoint not configured. Set KIRANAFLOW_BACKEND_BASE_URL in your local gradle.properties.",

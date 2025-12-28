@@ -9,6 +9,7 @@ import com.kiranaflow.app.data.local.KiranaDatabase
 import android.util.Log
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import com.kiranaflow.app.util.StockValidator
 
 data class BoxCartItem(val item: ItemEntity, val qty: Double)
 
@@ -33,7 +34,13 @@ data class BillSavedLineItem(
 
 sealed interface BillingScanResult {
     data class Added(val item: ItemEntity) : BillingScanResult
+    data class OutOfStock(val message: String, val availableStock: Double) : BillingScanResult
     data class NotFound(val barcode: String) : BillingScanResult
+}
+
+sealed interface StockValidationEvent {
+    data class Blocked(val message: String, val itemId: Int? = null) : StockValidationEvent
+    data class CheckoutBlocked(val message: String, val offendingItemIds: Set<Int>) : StockValidationEvent
 }
 
 class BillingViewModel(application: Application) : AndroidViewModel(application) {
@@ -54,6 +61,9 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     val billingSearch: StateFlow<String> = _searchQuery.asStateFlow()
 
     private val _items = repository.allItems
+    private val _itemsById: StateFlow<Map<Int, ItemEntity>> = _items
+        .map { list -> list.associateBy { it.id } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
     val searchResults: StateFlow<List<ItemEntity>> = combine(_items, _searchQuery) { items, query ->
         if (query.isEmpty()) emptyList()
         else items.filter { it.name.contains(query, ignoreCase = true) }
@@ -93,6 +103,14 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
         val currentList = _billItems.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.item.id == item.id }
         val effectiveQty = if (item.isLoose && quantity == 1.0) 0.25 else quantity // default 0.25kg
+        val currentQty = if (existingIndex != -1) currentList[existingIndex].qty else 0.0
+        val stockItem = _itemsById.value[item.id] ?: item
+        val check = StockValidator.canAddToBill(stockItem, currentQtyInBill = currentQty, qtyToAdd = effectiveQty)
+        if (!check.canAdd) {
+            check.message?.let { _stockValidationEvents.tryEmit(StockValidationEvent.Blocked(it, itemId = item.id)) }
+            return
+        }
+
         if (existingIndex != -1) {
             val existing = currentList[existingIndex]
             currentList[existingIndex] = existing.copy(qty = existing.qty + effectiveQty)
@@ -111,6 +129,12 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
                 currentList.removeAt(index)
             } else {
                 val existing = currentList[index]
+                val stockItem = _itemsById.value[itemId] ?: existing.item
+                val check = StockValidator.canAddToBill(stockItem, currentQtyInBill = 0.0, qtyToAdd = quantity)
+                if (!check.canAdd) {
+                    check.message?.let { _stockValidationEvents.tryEmit(StockValidationEvent.Blocked(it, itemId = itemId)) }
+                    return
+                }
                 currentList[index] = existing.copy(qty = quantity)
             }
             _billItems.value = currentList
@@ -157,7 +181,30 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
             val cartSnapshot = _billItems.value
             val items = cartSnapshot.map { it.item to it.qty }
             val total = cartSnapshot.sumOf { lineTotal(it.item, it.qty) }
-            val txId = repository.processSale(items, paymentMode, customerId, total)
+            val validation = StockValidator.validateCheckout(items, _itemsById.value)
+            if (!validation.ok) {
+                _stockValidationEvents.tryEmit(
+                    StockValidationEvent.CheckoutBlocked(
+                        message = validation.message ?: "Stock unavailable. Please review bill items.",
+                        offendingItemIds = validation.offendingItemIds
+                    )
+                )
+                return@launch
+            }
+
+            val result = repository.processSale(items, paymentMode, customerId, total)
+            val txId = when (result) {
+                is KiranaRepository.SaleResult.Success -> result.txId
+                is KiranaRepository.SaleResult.StockConflict -> {
+                    _stockValidationEvents.tryEmit(
+                        StockValidationEvent.CheckoutBlocked(
+                            message = "Stock unavailable. Please review bill items.",
+                            offendingItemIds = result.offendingItemIds
+                        )
+                    )
+                    return@launch
+                }
+            }
 
             val receiptItems = cartSnapshot.map { (item, qty) ->
                 val unitPrice = if (item.isLoose) item.pricePerKg else item.price
@@ -196,6 +243,14 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
                 ?: db.itemDao().getItemByBarcode(raw.replace(" ", ""))
 
             if (found != null) {
+                val currentQty = _billItems.value.firstOrNull { it.item.id == found.id }?.qty ?: 0.0
+                val stockItem = _itemsById.value[found.id] ?: found
+                val check = StockValidator.canAddToBill(stockItem, currentQtyInBill = currentQty, qtyToAdd = 1.0)
+                if (!check.canAdd) {
+                    val msg = check.message ?: "Out of Stock"
+                    _scanResults.tryEmit(BillingScanResult.OutOfStock(msg, check.availableStock))
+                    return@launch
+                }
                 addItemToBill(found, 1.0)
                 _scanResults.tryEmit(BillingScanResult.Added(found))
             } else {
@@ -211,6 +266,9 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     private val _billSavedEvents = MutableSharedFlow<BillSavedEvent>(extraBufferCapacity = 1)
     val billSavedEvents: SharedFlow<BillSavedEvent> = _billSavedEvents.asSharedFlow()
 
+    private val _stockValidationEvents = MutableSharedFlow<StockValidationEvent>(extraBufferCapacity = 16)
+    val stockValidationEvents: SharedFlow<StockValidationEvent> = _stockValidationEvents.asSharedFlow()
+
     fun updateQty(itemId: Int, delta: Double) {
         val currentList = _billItems.value.toMutableList()
         val index = currentList.indexOfFirst { it.item.id == itemId }
@@ -220,6 +278,12 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
             if (newQty <= 0.0) {
                 currentList.removeAt(index)
             } else {
+                val stockItem = _itemsById.value[itemId] ?: existing.item
+                val check = StockValidator.canAddToBill(stockItem, currentQtyInBill = 0.0, qtyToAdd = newQty)
+                if (!check.canAdd) {
+                    check.message?.let { _stockValidationEvents.tryEmit(StockValidationEvent.Blocked(it, itemId = itemId)) }
+                    return
+                }
                 currentList[index] = existing.copy(qty = newQty)
             }
             _billItems.value = currentList

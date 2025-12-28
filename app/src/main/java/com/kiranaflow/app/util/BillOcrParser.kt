@@ -11,7 +11,11 @@ object BillOcrParser {
     data class ParsedVendor(
         val name: String? = null,
         val gstNumber: String? = null,
-        val phone: String? = null
+        val phone: String? = null,
+        // Optional: best-effort extraction. May be null/blank for many bills.
+        val address: String? = null,
+        val invoiceNumber: String? = null,
+        val invoiceDateMillis: Long? = null
     )
 
     data class ParsedBillItem(
@@ -21,12 +25,24 @@ object BillOcrParser {
         val unit: String? = null, // e.g. PCS | KG | G
         val unitPrice: Double? = null,
         val total: Double? = null,
+        // Optional GST/discount hints (best-effort)
+        val discount: Double? = null,
+        val gstRate: Double? = null,
+        val cgstAmount: Double? = null,
+        val sgstAmount: Double? = null,
+        val igstAmount: Double? = null,
         val rawLine: String
     )
 
     data class ParsedBill(
         val vendor: ParsedVendor,
-        val items: List<ParsedBillItem>
+        val items: List<ParsedBillItem>,
+        // Optional invoice-level totals (best-effort)
+        val totalTaxAmount: Double? = null,
+        val cgstTotal: Double? = null,
+        val sgstTotal: Double? = null,
+        val igstTotal: Double? = null,
+        val grandTotalAmount: Double? = null
     )
 
     private val skipLineRegex = Regex(
@@ -40,6 +56,13 @@ object BillOcrParser {
     private val gstRegex = Regex("(?i)\\b\\d{2}[A-Z]{5}\\d{4}[A-Z]{1}[A-Z\\d]{1}Z[A-Z\\d]{1}\\b")
     private val phoneRegex = Regex("(?<!\\d)(\\d{10})(?!\\d)")
     private val vendorPrefixRegex = Regex("(?i)^(m\\.?\\s*/\\s*s\\.?\\s+|m/s\\s+|ms\\.?\\s+)")
+
+    // Invoice number is highly variable; this is intentionally loose.
+    private val invoiceNoRegex = Regex("(?i)\\b(inv(?:oice)?\\s*(?:no|#|number)?\\s*[:\\-]?)\\s*([A-Z0-9\\-/]{3,})\\b")
+    private val dateRegex = Regex("(?i)\\b(\\d{1,2}[\\-/]\\d{1,2}[\\-/]\\d{2,4})\\b")
+
+    // Invoice-level tax totals (best-effort)
+    private val taxLineRegex = Regex("(?i)\\b(cgst|sgst|igst|gst|tax)\\b")
 
     // Common vendor suffix/stopwords we don't want to over-weight when matching names.
     private val vendorStopwords = setOf(
@@ -79,12 +102,26 @@ object BillOcrParser {
 
         val vendor = parseVendor(lines)
         val items = parseItems(lines)
-        return ParsedBill(vendor = vendor, items = items)
+        val totals = parseInvoiceTotals(lines)
+        return ParsedBill(
+            vendor = vendor,
+            items = items,
+            totalTaxAmount = totals.totalTaxAmount,
+            cgstTotal = totals.cgstTotal,
+            sgstTotal = totals.sgstTotal,
+            igstTotal = totals.igstTotal,
+            grandTotalAmount = totals.grandTotalAmount
+        )
     }
 
     private fun parseVendor(lines: List<String>): ParsedVendor {
         val gst = lines.asSequence().mapNotNull { gstRegex.find(it)?.value }.firstOrNull()
         val phone = lines.asSequence().mapNotNull { phoneRegex.find(it)?.groupValues?.getOrNull(1) }.firstOrNull()
+        val invoiceNo = lines.asSequence().mapNotNull { invoiceNoRegex.find(it)?.groupValues?.getOrNull(2) }.firstOrNull()
+        val invoiceDateMillis = lines.asSequence()
+            .mapNotNull { dateRegex.find(it)?.groupValues?.getOrNull(1) }
+            .mapNotNull { parseDateToMillisOrNull(it) }
+            .firstOrNull()
 
         // Heuristics:
         // - vendor name is usually in the first few lines
@@ -112,7 +149,26 @@ object BillOcrParser {
             .maxByOrNull { vendorNameScore(it) }
             ?.takeIf { vendorNameScore(it) >= 2 }
 
-        return ParsedVendor(name = name, gstNumber = gst, phone = phone)
+        // Address (best-effort): take a couple of lines after the vendor name line if they look address-like.
+        val address = runCatching {
+            val idx = name?.let { n -> lines.indexOfFirst { it.contains(n, ignoreCase = true) } } ?: -1
+            if (idx < 0) return@runCatching null
+            lines.drop(idx + 1)
+                .take(3)
+                .joinToString(", ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .takeIf { it.length in 8..120 && it.any { ch -> ch.isLetter() } && !gstRegex.containsMatchIn(it) }
+        }.getOrNull()
+
+        return ParsedVendor(
+            name = name,
+            gstNumber = gst,
+            phone = phone,
+            address = address,
+            invoiceNumber = invoiceNo,
+            invoiceDateMillis = invoiceDateMillis
+        )
     }
 
     private fun vendorNameScore(s: String): Int {
@@ -280,6 +336,84 @@ object BillOcrParser {
             .replace(",", "")
             .trim()
         return cleaned.toDoubleOrNull()
+    }
+
+    private data class InvoiceTotals(
+        val totalTaxAmount: Double? = null,
+        val cgstTotal: Double? = null,
+        val sgstTotal: Double? = null,
+        val igstTotal: Double? = null,
+        val grandTotalAmount: Double? = null
+    )
+
+    private fun parseInvoiceTotals(lines: List<String>): InvoiceTotals {
+        // Best-effort: look for lines containing CGST/SGST/IGST/TAX and parse trailing amount.
+        fun trailingAmountOrNull(line: String): Double? {
+            val tokens = line.split(" ").reversed()
+            for (t in tokens) {
+                val n = parseNumber(t)
+                if (n != null) return n
+            }
+            return null
+        }
+
+        var cgst: Double? = null
+        var sgst: Double? = null
+        var igst: Double? = null
+        var tax: Double? = null
+        var grand: Double? = null
+
+        for (l in lines) {
+            val line = l.replace(Regex("\\s+"), " ").trim()
+            if (line.isBlank()) continue
+            if (!taxLineRegex.containsMatchIn(line)) continue
+
+            val amt = trailingAmountOrNull(line) ?: continue
+            when {
+                line.contains("cgst", ignoreCase = true) -> cgst = amt
+                line.contains("sgst", ignoreCase = true) -> sgst = amt
+                line.contains("igst", ignoreCase = true) -> igst = amt
+                line.contains("total tax", ignoreCase = true) || (line.contains("gst", ignoreCase = true) && line.contains("total", ignoreCase = true)) -> tax = amt
+            }
+        }
+
+        // Grand total: search bottom-up for "grand total"/"net amount"/"total amount".
+        val grandRegex = Regex("(?i)\\b(grand\\s*total|net\\s*amount|total\\s*amount|amount\\s*payable)\\b")
+        for (l in lines.asReversed()) {
+            val line = l.replace(Regex("\\s+"), " ").trim()
+            if (!grandRegex.containsMatchIn(line)) continue
+            grand = trailingAmountOrNull(line)
+            if (grand != null) break
+        }
+
+        return InvoiceTotals(
+            totalTaxAmount = tax,
+            cgstTotal = cgst,
+            sgstTotal = sgst,
+            igstTotal = igst,
+            grandTotalAmount = grand
+        )
+    }
+
+    private fun parseDateToMillisOrNull(token: String): Long? {
+        // dd/MM/yyyy, dd-MM-yyyy, dd/MM/yy, dd-MM-yy
+        val parts = token.split("/", "-")
+        if (parts.size != 3) return null
+        val d = parts[0].toIntOrNull() ?: return null
+        val m = parts[1].toIntOrNull() ?: return null
+        val yRaw = parts[2].toIntOrNull() ?: return null
+        val y = if (yRaw < 100) 2000 + yRaw else yRaw
+        if (d !in 1..31 || m !in 1..12 || y !in 2000..2100) return null
+        val cal = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.YEAR, y)
+            set(java.util.Calendar.MONTH, m - 1)
+            set(java.util.Calendar.DAY_OF_MONTH, d)
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        return cal.timeInMillis
     }
 }
 

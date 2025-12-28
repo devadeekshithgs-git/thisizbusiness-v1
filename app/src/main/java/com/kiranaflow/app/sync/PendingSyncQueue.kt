@@ -27,7 +27,11 @@ enum class SyncOpType {
     CREATE_VENDOR_PURCHASE,
     CREATE_EXPENSE,
     UPSERT_CUSTOMER,
-    UPSERT_VENDOR
+    UPSERT_VENDOR,
+    EDIT_TRANSACTION,
+    CREATE_ADJUSTMENT,
+    FINALIZE_TRANSACTION,
+    VOID_TRANSACTION
 }
 
 data class PendingSyncOp(
@@ -51,6 +55,9 @@ class PendingSyncQueue(
         )
     }
 }
+
+
+
 
 
 

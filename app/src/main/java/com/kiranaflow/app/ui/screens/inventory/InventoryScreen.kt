@@ -72,6 +72,7 @@ import com.kiranaflow.app.data.local.CategoryHsnStore
 import com.kiranaflow.app.data.repository.KiranaRepository
 import com.kiranaflow.app.ui.components.CircleButton
 import com.kiranaflow.app.ui.components.IconCircleButton
+import com.kiranaflow.app.ui.components.BillReviewSection
 import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
@@ -103,6 +104,7 @@ fun InventoryScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
+    val billScanViewModel: BillScanViewModel = viewModel()
     val categoryHsnStore = remember(context) { CategoryHsnStore(context) }
     val categoryHsnDefaults by categoryHsnStore.defaults.collectAsState(initial = emptyMap())
     val items by viewModel.filteredItems.collectAsState()
@@ -117,6 +119,7 @@ fun InventoryScreen(
     var showBillScanner by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
     var purchaseDraft by remember { mutableStateOf<PurchaseDraft?>(null) }
+    val billDraft by billScanViewModel.draft.collectAsState()
 
     var saveEventToConfirm by remember { mutableStateOf<InventoryViewModel.ItemSaveEvent.Success?>(null) }
     var saveErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -331,7 +334,10 @@ fun InventoryScreen(
                             }
                         } else {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(onClick = { showBillScanner = true }) {
+                                TextButton(
+                                    onClick = { showBillScanner = true },
+                                    enabled = !importBusy
+                                ) {
                                     Icon(Icons.Default.CameraAlt, contentDescription = null, tint = TextSecondary)
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Scan Bill", fontWeight = FontWeight.Bold, color = TextSecondary)
@@ -344,6 +350,31 @@ fun InventoryScreen(
                             }
                         }
                     }
+                }
+            }
+
+            // Temporary, collapsible in-screen review section (appears only after a scan).
+            item {
+                billDraft?.let { draft ->
+                    BillReviewSection(
+                        draft = draft,
+                        onUpdateItem = { billScanViewModel.updateItem(it) },
+                        onDone = {
+                            billScanViewModel.commitDraft(
+                                onDone = { added, updated ->
+                                    Toast.makeText(
+                                        context,
+                                        "Imported: $added added, $updated updated",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                },
+                                onError = { msg ->
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        },
+                        onDiscard = { billScanViewModel.clearDraft() }
+                    )
                 }
             }
 
@@ -475,26 +506,13 @@ fun InventoryScreen(
             onDismiss = { showBillScanner = false },
             onBillDocumentSelected = { uri ->
                 showBillScanner = false
-                val cr = context.contentResolver
                 scope.launch {
                     if (importBusy) return@launch
                     importBusy = true
                     try {
-                        val text = OcrUtils.ocrFromUri(cr, uri)
-                        val parsed = BillExtractionPipeline.extract(context, text)
-                        val res = repo.processVendorBill(parsed)
-                        Toast.makeText(
-                            context,
-                            "Imported: ${res.added} added, ${res.updated} updated",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        // Offer to record this as a vendor purchase (so payables can show itemized dues).
-                        purchaseDraft = PurchaseDraft(
-                            parsed = parsed,
-                            receiptUri = uri.toString(),
-                            detectedVendorId = res.vendorId,
-                            detectedVendorName = res.vendorName ?: parsed.vendor.name
-                        )
+                        // New non-destructive flow: scan -> draft -> review -> commit.
+                        // We do not touch inventory DB until user taps Done in the review section.
+                        billScanViewModel.scanFromUri(context, uri)
                     } finally {
                         importBusy = false
                     }

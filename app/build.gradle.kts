@@ -127,6 +127,11 @@ dependencies {
     implementation("com.google.mlkit:text-recognition:16.0.0")
     implementation("com.google.mlkit:text-recognition-devanagari:16.0.0") // Hindi
 
+    // ML Kit - Document Scanner + Entity Extraction (on-device)
+    // Note: document scanner is Play-services backed; no API keys / no cloud config required.
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
+    implementation("com.google.mlkit:entity-extraction:16.0.0-beta5")
+
     // Image loading (for product photos)
     implementation("io.coil-kt:coil-compose:2.5.0")
 

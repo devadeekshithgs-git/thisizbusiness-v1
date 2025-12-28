@@ -58,6 +58,14 @@ object OutboxDispatcher {
                     RemoteRequestPreview("POST", "$base/transactions/expense", body)
                 SyncOpType.UPSERT ->
                     RemoteRequestPreview("PUT", "$base/transactions/${op.entityId}", body)
+                SyncOpType.EDIT_TRANSACTION ->
+                    RemoteRequestPreview("PUT", "$base/transactions/${op.entityId}", body)
+                SyncOpType.FINALIZE_TRANSACTION ->
+                    RemoteRequestPreview("POST", "$base/transactions/${op.entityId}/finalize", body)
+                SyncOpType.VOID_TRANSACTION ->
+                    RemoteRequestPreview("POST", "$base/transactions/${op.entityId}/void", body)
+                SyncOpType.CREATE_ADJUSTMENT ->
+                    RemoteRequestPreview("POST", "$base/transactions/${op.entityId}/adjustments", body)
                 else ->
                     RemoteRequestPreview("POST", "$base/transactions/_unsupported_${op.op.name.lowercase()}", body)
             }

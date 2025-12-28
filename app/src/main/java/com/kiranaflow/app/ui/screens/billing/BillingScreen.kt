@@ -1,11 +1,6 @@
 package com.kiranaflow.app.ui.screens.billing
 
-import android.media.MediaPlayer
-import android.media.AudioAttributes
-import android.media.SoundPool
 import android.os.Build
-import android.os.VibrationEffect
-import android.os.Vibrator
 import android.speech.tts.TextToSpeech
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,6 +39,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import com.kiranaflow.app.R
+import com.kiranaflow.app.core.feedback.ScanFeedbackManager
 import com.kiranaflow.app.data.local.ItemEntity
 import com.kiranaflow.app.data.local.ShopSettingsStore
 import com.kiranaflow.app.data.local.ShopSettings
@@ -75,6 +71,7 @@ import com.kiranaflow.app.ui.screens.billing.BillSavedLineItem
 import com.kiranaflow.app.util.ReceiptImageRenderer
 import com.kiranaflow.app.util.ReceiptRenderData
 import com.kiranaflow.app.util.ReceiptRenderItem
+import android.widget.Toast
 
 // Save/restore scanner overlay state across configuration changes (e.g., landscape rotation).
 private val BillingScanOverlayStateSaver = androidx.compose.runtime.saveable.Saver<BillingScanOverlayState, List<Any?>>(
@@ -148,6 +145,7 @@ fun BillingScreen(
     var quickAddStock by remember { mutableStateOf("") }
     var quickAddNameError by remember { mutableStateOf(false) }
     var quickAddErrorText by remember { mutableStateOf<String?>(null) }
+    var stockBlockedIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
 
     // Loose items: step is in KG (e.g., 0.25kg) to match BillingViewModel qty units.
     val looseStepByItemId = remember { mutableStateMapOf<Int, Double>() }
@@ -210,12 +208,7 @@ fun BillingScreen(
             onTriggerConsumed()
         }
     }
-    val vibrator: Vibrator? = remember {
-        runCatching { context.getSystemService(Vibrator::class.java) }.getOrNull()
-    }
-    val mediaPlayer: MediaPlayer? = remember {
-        runCatching { MediaPlayer.create(context, R.raw.beep) }.getOrNull()
-    }
+    val scanFeedbackManager = remember(context) { ScanFeedbackManager(context.applicationContext) }
 
     // Voice confirmation (TTS) for transaction saved.
     var ttsReady by remember { mutableStateOf(false) }
@@ -230,58 +223,11 @@ fun BillingScreen(
         }
     }
 
-    // More reliable for short loud beeps than MediaPlayer (fallback kept).
-    val soundPool = remember {
-        val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
-        SoundPool.Builder()
-            .setMaxStreams(1)
-            .setAudioAttributes(attrs)
-            .build()
-    }
-    var beepSoundId by remember { mutableIntStateOf(0) }
-    var beepLoaded by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) {
-        soundPool.setOnLoadCompleteListener { _, sampleId, status ->
-            if (sampleId == beepSoundId && status == 0) {
-                beepLoaded = true
-            }
-        }
-        beepSoundId = runCatching { soundPool.load(context, R.raw.beep, 1) }.getOrDefault(0)
-        onDispose {
-            runCatching { mediaPlayer?.release() }
-            runCatching { soundPool.release() }
-        }
-    }
-
     val newBarcode = navController.currentBackStackEntry?.savedStateHandle?.getLiveData<String>("barcode")?.observeAsState()
 
     LaunchedEffect(newBarcode) {
         newBarcode?.value?.let {
             viewModel.addItemToCartByBarcode(it)
-            // Provide feedback
-            // Provide feedback (safe on devices without vibrator / media)
-            runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator?.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator?.vibrate(100)
-                }
-            }
-            runCatching {
-                if (beepLoaded) {
-                    soundPool.play(beepSoundId, 1f, 1f, 1, 0, 1f)
-                } else {
-                    mediaPlayer?.let { mp ->
-                        if (mp.isPlaying) mp.seekTo(0)
-                        mp.setVolume(1f, 1f)
-                        mp.start()
-                    }
-                }
-            }
             // Clear the barcode to prevent re-triggering
             navController.currentBackStackEntry?.savedStateHandle?.set("barcode", null)
         }
@@ -293,31 +239,32 @@ fun BillingScreen(
             when (result) {
                 is BillingScanResult.Added -> {
                     scanOverlayState = BillingScanOverlayState.Added(result.item.id, result.item.name)
-                    // Loud beep + haptic on success
-                    runCatching {
-                        if (beepLoaded) {
-                            soundPool.play(beepSoundId, 1f, 1f, 1, 0, 1f)
-                        } else {
-                            mediaPlayer?.let { mp ->
-                                if (mp.isPlaying) mp.seekTo(0)
-                                mp.setVolume(1f, 1f)
-                                mp.start()
-                            }
-                        }
-                    }
-                    runCatching {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            vibrator?.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE))
-                        } else {
-                            @Suppress("DEPRECATION")
-                            vibrator?.vibrate(120)
-                        }
-                    }
+                    // POS-style feedback: trigger ONLY on success (item added / qty incremented).
+                    scanFeedbackManager.onScanSuccess(context)
                     // Keep the success overlay visible until the next scan (wireframe requirement),
                     // so the user can quickly adjust quantity from this overlay.
                 }
+                is BillingScanResult.OutOfStock -> {
+                    // No beep/haptic on stock failure (PRD requirement).
+                    Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                }
                 is BillingScanResult.NotFound -> {
                     scanOverlayState = BillingScanOverlayState.NotFound(result.barcode)
+                }
+            }
+        }
+    }
+
+    // Stock validation feedback (manual add / qty increase / checkout).
+    LaunchedEffect(Unit) {
+        viewModel.stockValidationEvents.collectLatest { ev ->
+            when (ev) {
+                is StockValidationEvent.Blocked -> {
+                    Toast.makeText(context, ev.message, Toast.LENGTH_SHORT).show()
+                }
+                is StockValidationEvent.CheckoutBlocked -> {
+                    stockBlockedIds = ev.offendingItemIds
+                    Toast.makeText(context, ev.message, Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -458,17 +405,22 @@ fun BillingScreen(
                                         }
                                     } else {
                                         searchResults.take(5).forEach { item ->
+                                            val outOfStock = if (item.isLoose) item.stockKg <= 0.0 else item.stock <= 0
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .clickable { viewModel.addItemToBill(item, 1.0) }
+                                                    .clickable(enabled = !outOfStock) { viewModel.addItemToBill(item, 1.0) }
                                                     .padding(12.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 Text(item.name, modifier = Modifier.weight(1f), color = TextPrimary)
                                                 val priceText =
                                                     if (item.isLoose) "₹${item.pricePerKg.toInt()}/kg" else "₹${item.price.toInt()}"
-                                                Text(priceText, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                                if (outOfStock) {
+                                                    Text("Out of Stock", fontWeight = FontWeight.Bold, color = LossRed)
+                                                } else {
+                                                    Text(priceText, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                                }
                                             }
                                         }
                                     }
@@ -501,6 +453,7 @@ fun BillingScreen(
                     } else {
                         items(billItems) { billItem ->
                             val isLoose = billItem.item.isLoose
+                            val isBlocked = stockBlockedIds.contains(billItem.item.id)
                             if (isLoose) {
                                 LaunchedEffect(billItem.item.id) {
                                     if (looseStepByItemId[billItem.item.id] == null) {
@@ -509,6 +462,8 @@ fun BillingScreen(
                                 }
                             }
                             val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 0.25) else 1.0
+                            val available = if (isLoose) billItem.item.stockKg else billItem.item.stock.toDouble()
+                            val canInc = (billItem.qty + step) <= available
                             val subtotal =
                                 if (isLoose) billItem.item.pricePerKg * billItem.qty
                                 else billItem.item.price * billItem.qty
@@ -522,22 +477,33 @@ fun BillingScreen(
                                     pricePerKg = billItem.item.pricePerKg,
                                     unitPrice = billItem.item.price,
                                     subtotal = subtotal,
+                                    highlightStockIssue = isBlocked,
                                     selectedStepKg = step,
                                     onSelectStepKg = { kg ->
                                         looseStepByItemId[billItem.item.id] = kg
+                                        stockBlockedIds = stockBlockedIds - billItem.item.id
                                         viewModel.updateItemQuantity(billItem.item.id, kg)
                                     },
                                     onCustomWeight = {
                                         customWeightForItemId = billItem.item.id
                                         customWeightText = String.format("%.3f", billItem.qty).trimEnd('0').trimEnd('.')
                                     },
-                                    onInc = { viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step) },
+                                    onInc = {
+                                        if (canInc) {
+                                            stockBlockedIds = stockBlockedIds - billItem.item.id
+                                            viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step)
+                                        } else {
+                                            // Let ViewModel emit the canonical message.
+                                            viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step)
+                                        }
+                                    },
                                     onDec = {
                                         val newQty = billItem.qty - step
+                                        stockBlockedIds = stockBlockedIds - billItem.item.id
                                         if (newQty > 0.0) viewModel.updateItemQuantity(billItem.item.id, newQty)
                                         else viewModel.removeItemFromBill(billItem.item.id)
                                     },
-                                    onDelete = { viewModel.removeItemFromBill(billItem.item.id) },
+                                    onDelete = { stockBlockedIds = stockBlockedIds - billItem.item.id; viewModel.removeItemFromBill(billItem.item.id) },
                                     onEditPrice = {
                                         priceEditItem = billItem
                                         showPriceEditDialog = true
@@ -1618,6 +1584,7 @@ fun CartItemCard(
     pricePerKg: Double,
     unitPrice: Double,
     subtotal: Double,
+    highlightStockIssue: Boolean = false,
     selectedStepKg: Double,
     onSelectStepKg: (Double) -> Unit,
     onCustomWeight: () -> Unit,
@@ -1636,7 +1603,7 @@ fun CartItemCard(
     fun formatQtyShort(): String = if (isLoose) formatKgShort(qty) else qty.toInt().toString()
     val lineTotalLabel = "₹${subtotal.toInt()}"
 
-    KiranaCard(borderColor = Color.Transparent) {
+    KiranaCard(borderColor = if (highlightStockIssue) LossRed else Color.Transparent) {
         Row(
             modifier = Modifier
                 .fillMaxWidth(),
