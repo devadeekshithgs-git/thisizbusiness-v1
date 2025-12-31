@@ -34,8 +34,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.navigation.navArgument
-import androidx.navigation.NavType
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.kiranaflow.app.data.local.KiranaDatabase
@@ -46,16 +44,6 @@ import com.kiranaflow.app.ui.components.SettingsDrawer
 import com.kiranaflow.app.ui.screens.billing.BillingScreen
 import com.kiranaflow.app.ui.screens.billing.BillingViewModel
 import com.kiranaflow.app.ui.screens.home.HomeScreen
-import com.kiranaflow.app.ui.screens.gst.GstReportsScreen
-import com.kiranaflow.app.ui.screens.gst.Gstr1ReviewScreen
-import com.kiranaflow.app.ui.screens.gst.GstReportsViewModel
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.platform.LocalContext
-import com.kiranaflow.app.util.gst.Gstr1ExcelGenerator
-import com.kiranaflow.app.util.gst.Gstr1JsonGenerator
-import com.kiranaflow.app.util.gst.Gstr1PdfGenerator
-import com.kiranaflow.app.util.gst.GstFileExporter
 import com.kiranaflow.app.ui.screens.inventory.InventoryScreen
 import com.kiranaflow.app.ui.screens.parties.PartiesScreen
 import com.kiranaflow.app.ui.screens.scanner.ScannerScreen
@@ -64,7 +52,7 @@ import com.kiranaflow.app.ui.screens.transactions.TransactionDetailScreen
 import com.kiranaflow.app.ui.screens.vendors.ItemsToReorderScreen
 import com.kiranaflow.app.ui.screens.vendors.TotalPayablesScreen
 import com.kiranaflow.app.ui.screens.vendors.VendorDetailScreen
-import com.kiranaflow.app.ui.screens.vendors.VendorsScreen // Imported correctly
+import com.kiranaflow.app.ui.screens.vendors.VendorsScreen 
 import com.kiranaflow.app.ui.theme.KiranaTheme
 import com.kiranaflow.app.util.DebugLogger
 import com.kiranaflow.app.util.ConnectivityMonitor
@@ -344,93 +332,7 @@ fun KiranaApp() {
                     HomeScreen(
                         onSettingsClick = { showSettingsDrawer = true },
                         onViewAllTransactions = { navController.navigate("transactions") },
-                        onOpenTransaction = { txId -> navController.navigate("transaction/$txId") },
-                        onOpenGstReports = { navController.navigate("gst") }
-                    )
-                }
-                composable("gst") {
-                    GstReportsScreen(
-                        onBack = { navController.popBackStack() },
-                        onOpenSettings = { showSettingsDrawer = true },
-                        onOpenGstr1 = { from, toExclusive ->
-                            navController.navigate("gst/gstr1?from=$from&to=$toExclusive")
-                        }
-                    )
-                }
-                composable(
-                    route = "gst/gstr1?from={from}&to={to}",
-                    arguments = listOf(
-                        navArgument("from") { type = NavType.LongType },
-                        navArgument("to") { type = NavType.LongType }
-                    )
-                ) { backStackEntry ->
-                    val from = backStackEntry.arguments?.getLong("from") ?: 0L
-                    val to = backStackEntry.arguments?.getLong("to") ?: 0L
-                    val vm: GstReportsViewModel = viewModel()
-                    val context = LocalContext.current
-                    val state by vm.gstr1.collectAsState()
-
-                    LaunchedEffect(from, to) {
-                        if (from > 0L && to > 0L) vm.loadGstr1(from, to)
-                    }
-
-                    Gstr1ReviewScreen(
-                        state = state,
-                        onBack = { navController.popBackStack() },
-                        onOpenSettings = { showSettingsDrawer = true },
-                        onUpdateInvoiceNumber = { txId, invNo -> vm.updateInvoiceNumber(txId, invNo) },
-                        onUpdateRecipientName = { txId, name -> vm.updateRecipientName(txId, name) },
-                        onUpdateRecipientGstin = { txId, gstin -> vm.updateRecipientGstin(txId, gstin) },
-                        onUpdatePlaceOfSupply = { txId, pos -> vm.updatePlaceOfSupply(txId, pos) },
-                        onUpdateLineHsn = { lineId, hsn -> vm.updateLineHsn(lineId, hsn) },
-                        onUpdateLineGstRate = { lineId, rate -> vm.updateLineGstRate(lineId, rate) },
-                        onUpdateLineTaxableValue = { lineId, txval -> vm.updateLineTaxableValue(lineId, txval) },
-                        onExportJson = {
-                            val jsonObj = Gstr1JsonGenerator.build(state, vm::formatInvoiceDate)
-                            val jsonStr = Gstr1JsonGenerator.toJsonString(jsonObj)
-                            val name = "GSTR1_${jsonObj.fp}_${state.businessGstin.ifBlank { "GSTIN" }}.json"
-                            val uri = GstFileExporter.saveTextToDownloads(context, name, "application/json", jsonStr)
-                            if (uri != null) {
-                                GstFileExporter.share(context, uri, "application/json", "Share GSTR-1 JSON")
-                            }
-                        },
-                        onExportExcel = {
-                            val bytes = Gstr1ExcelGenerator.generateXlsx(state)
-                            val fp = Gstr1JsonGenerator.build(state, vm::formatInvoiceDate).fp
-                            val name = "GSTR1_${fp}_${state.businessGstin.ifBlank { "GSTIN" }}.xlsx"
-                            val uri = GstFileExporter.saveBytesToDownloads(
-                                context = context,
-                                displayName = name,
-                                mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                bytes = bytes
-                            )
-                            if (uri != null) {
-                                GstFileExporter.share(
-                                    context,
-                                    uri,
-                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    "Share GSTR-1 Excel"
-                                )
-                            }
-                        },
-                        onExportPdf = {
-                            val jsonObj = Gstr1JsonGenerator.build(state, vm::formatInvoiceDate)
-                            val bytes = Gstr1PdfGenerator.generatePdfBytes(
-                                state = state,
-                                filingPeriod = jsonObj.fp,
-                                formatInvoiceDate = vm::formatInvoiceDate
-                            )
-                            val name = "GSTR1_${jsonObj.fp}_${state.businessGstin.ifBlank { "GSTIN" }}.pdf"
-                            val uri = GstFileExporter.saveBytesToDownloads(
-                                context = context,
-                                displayName = name,
-                                mimeType = "application/pdf",
-                                bytes = bytes
-                            )
-                            if (uri != null) {
-                                GstFileExporter.share(context, uri, "application/pdf", "Share GSTR-1 PDF")
-                            }
-                        }
+                        onOpenTransaction = { txId -> navController.navigate("transaction/$txId") }
                     )
                 }
                 composable("transactions") {

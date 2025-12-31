@@ -46,15 +46,46 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
+
+private val BARCODE_FORMATS = intArrayOf(
+    Barcode.FORMAT_EAN_13,
+    Barcode.FORMAT_EAN_8,
+    Barcode.FORMAT_UPC_A,
+    Barcode.FORMAT_UPC_E,
+    Barcode.FORMAT_CODE_128,
+    Barcode.FORMAT_CODE_39
+)
+
+private val QR_FORMATS = intArrayOf(
+    Barcode.FORMAT_QR_CODE
+)
+
+private fun Barcode.isQr(): Boolean = this.format == Barcode.FORMAT_QR_CODE
+
+private fun Barcode.isLinearBarcode(): Boolean {
+    return when (this.format) {
+        Barcode.FORMAT_EAN_13,
+        Barcode.FORMAT_EAN_8,
+        Barcode.FORMAT_UPC_A,
+        Barcode.FORMAT_UPC_E,
+        Barcode.FORMAT_CODE_128,
+        Barcode.FORMAT_CODE_39 -> true
+
+        else -> false
+    }
+}
 
 @Composable
 fun ScannerScreen(
     isContinuous: Boolean,
     onBarcodeScanned: (String) -> Unit,
+    onQrScanned: (String) -> Unit = {},
     onClose: () -> Unit,
+    scanMode: ScanMode = ScanMode.BARCODE,
     modifier: Modifier = Modifier.fillMaxSize(),
     backgroundColor: Color = Color.Black,
     showCloseButton: Boolean = true,
@@ -79,10 +110,15 @@ fun ScannerScreen(
     var isCameraStarting by remember { mutableStateOf(true) }
     var lastScannedText by remember { mutableStateOf<String?>(null) }
     var lastError by remember { mutableStateOf<String?>(null) }
+    var lastScannedTimeMs by remember { mutableStateOf(0L) }
 
     // PreviewView must be created/owned by AndroidView to avoid "already has a parent" issues
     // and to ensure proper attach/detach across navigation.
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
+
+    var imageAnalysis by remember { mutableStateOf<ImageAnalysis?>(null) }
+    var scanner by remember { mutableStateOf<BarcodeScanner?>(null) }
+    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
     // Dedicated analyzer executor (avoid creating a new executor per recomposition).
     val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
@@ -96,10 +132,6 @@ fun ScannerScreen(
 
     // Bind camera asynchronously (DO NOT block UI thread with cameraProviderFuture.get()).
     DisposableEffect(hasCamPermission, lifecycleOwner, previewView) {
-        var cameraProvider: androidx.camera.lifecycle.ProcessCameraProvider? = null
-        var imageAnalysis: ImageAnalysis? = null
-        var scanner: com.google.mlkit.vision.barcode.BarcodeScanner? = null
-
         if (hasCamPermission && previewView != null) {
             isCameraStarting = true
             lastError = null
@@ -129,49 +161,6 @@ fun ScannerScreen(
                             .setResolutionSelector(resolutionSelector)
                             .setBackpressureStrategy(STRATEGY_KEEP_ONLY_LATEST)
                             .build()
-
-                        val options = BarcodeScannerOptions.Builder()
-                            .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
-                            .build()
-                        scanner = BarcodeScanning.getClient(options)
-
-                        var lastScannedTimeMs = 0L
-                        imageAnalysis?.setAnalyzer(analyzerExecutor) { imageProxy ->
-                            val now = System.currentTimeMillis()
-                            if (isContinuous && now - lastScannedTimeMs < 1500) {
-                                imageProxy.close()
-                                return@setAnalyzer
-                            }
-
-                            val mediaImage = imageProxy.image
-                            if (mediaImage == null) {
-                                imageProxy.close()
-                                return@setAnalyzer
-                            }
-
-                            val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                            scanner?.process(inputImage)
-                                ?.addOnSuccessListener { barcodes ->
-                                    if (barcodes.isNotEmpty()) {
-                                        val barcodeValue = (barcodes[0].rawValue ?: "").trim()
-                                        if (barcodeValue.isNotBlank()) {
-                                            Log.d(
-                                                "ScannerScreen",
-                                                "Scanned barcode='$barcodeValue' continuous=$isContinuous"
-                                            )
-                                            lastScannedText = barcodeValue
-                                            lastScannedTimeMs = now
-                                            onBarcodeScanned(barcodeValue)
-                                            if (!isContinuous) onClose()
-                                        }
-                                    }
-                                }
-                                ?.addOnFailureListener { e ->
-                                    Log.e("ScannerScreen", "Scan failed", e)
-                                    lastError = e.message ?: "Scan failed"
-                                }
-                                ?.addOnCompleteListener { imageProxy.close() }
-                        }
 
                         cameraProvider?.unbindAll()
                         cameraProvider?.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
@@ -203,6 +192,92 @@ fun ScannerScreen(
                 cameraProvider?.unbindAll()
             } catch (_: Exception) {
             }
+            imageAnalysis = null
+            scanner = null
+            cameraProvider = null
+        }
+    }
+
+    LaunchedEffect(scanMode, hasCamPermission, previewView, imageAnalysis) {
+        if (!hasCamPermission || previewView == null) return@LaunchedEffect
+        val analysis = imageAnalysis ?: return@LaunchedEffect
+
+        val activeScanMode = scanMode
+
+        Log.d("ScannerScreen", "Reconfiguring analyzer for scanMode=$activeScanMode")
+
+        runCatching { analysis.clearAnalyzer() }
+        runCatching { scanner?.close() }
+
+        val formats: IntArray = if (activeScanMode == ScanMode.BARCODE) BARCODE_FORMATS else QR_FORMATS
+        if (formats.isEmpty()) return@LaunchedEffect
+
+        val firstFormat = formats[0]
+        val additionalFormats = if (formats.size > 1) formats.copyOfRange(1, formats.size) else intArrayOf()
+
+        val options = BarcodeScannerOptions.Builder()
+            .setBarcodeFormats(
+                firstFormat,
+                *additionalFormats
+            )
+            .build()
+
+        val localScanner = BarcodeScanning.getClient(options)
+        scanner = localScanner
+
+        // Note: analyzer must be re-set after clearAnalyzer(), otherwise the old analyzer could keep running.
+
+        analysis.setAnalyzer(analyzerExecutor) { imageProxy ->
+            val now = System.currentTimeMillis()
+            if (isContinuous && now - lastScannedTimeMs < 1500) {
+                imageProxy.close()
+                return@setAnalyzer
+            }
+
+            val mediaImage = imageProxy.image
+            if (mediaImage == null) {
+                imageProxy.close()
+                return@setAnalyzer
+            }
+
+            val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+            localScanner.process(inputImage)
+                .addOnSuccessListener { barcodes ->
+                    if (barcodes.isNotEmpty()) {
+                        val first = barcodes[0]
+                        Log.d(
+                            "ScannerScreen",
+                            "MLKit detected count=${barcodes.size} first.format=${first.format} mode=$activeScanMode"
+                        )
+
+                        val allowed = when (activeScanMode) {
+                            ScanMode.BARCODE -> first.isLinearBarcode()
+                            ScanMode.QR -> first.isQr()
+                        }
+
+                        if (!allowed) return@addOnSuccessListener
+
+                        val scannedValue = (first.rawValue ?: first.displayValue ?: "").trim()
+                        if (scannedValue.isNotBlank()) {
+                            Log.d(
+                                "ScannerScreen",
+                                "Scanned value='$scannedValue' mode=$activeScanMode continuous=$isContinuous"
+                            )
+                            lastScannedText = scannedValue
+                            lastScannedTimeMs = now
+                            when (activeScanMode) {
+                                ScanMode.BARCODE -> onBarcodeScanned(scannedValue)
+                                ScanMode.QR -> onQrScanned(scannedValue)
+                            }
+                            if (!isContinuous) onClose()
+                        }
+                    }
+                }
+                .addOnFailureListener { e ->
+                    Log.e("ScannerScreen", "Scan failed", e)
+                    lastError = e.message ?: "Scan failed"
+                }
+                .addOnCompleteListener { imageProxy.close() }
         }
     }
 

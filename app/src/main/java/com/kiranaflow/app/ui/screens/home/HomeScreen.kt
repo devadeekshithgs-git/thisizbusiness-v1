@@ -73,8 +73,7 @@ fun HomeScreen(
     viewModel: DashboardViewModel = viewModel(),
     onSettingsClick: () -> Unit = {},
     onViewAllTransactions: () -> Unit = {},
-    onOpenTransaction: (Int) -> Unit = {},
-    onOpenGstReports: () -> Unit = {}
+    onOpenTransaction: (Int) -> Unit = {}
 ) {
     // #region agent log
     com.kiranaflow.app.util.DebugLogger.log("HomeScreen.kt:47", "HomeScreen composable entered", mapOf(), "H6")
@@ -749,41 +748,6 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // =================== SECTION 5: GST REPORTS ===================
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            colors = CardDefaults.cardColors(containerColor = BgPrimary),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-            onClick = onOpenGstReports
-        ) {
-            Row(
-                modifier = Modifier.padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = Blue600)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text("GST Reports", fontWeight = FontWeight.Black, color = TextPrimary)
-                        Text(
-                            "Export GSTR-1 (JSON + Excel)",
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                            maxLines = 1
-                        )
-                    }
-                }
-                Text(
-                    "Open",
-                    fontWeight = FontWeight.Bold,
-                    color = Blue600
-                )
-            }
-        }
     }
 
     // Date Range Picker Dialog
@@ -995,30 +959,34 @@ private fun ReminderCard(
                 }
             }
 
-            if (isCompleted) {
-                // Show dismiss button for completed reminders
+            Row(
+                modifier = Modifier.size(36.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Show complete button (circle) for pending reminders
+                if (!isCompleted) {
+                    IconButton(
+                        onClick = onCompleteClick,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.RadioButtonUnchecked,
+                            contentDescription = "Mark as complete",
+                            tint = Blue600,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                // Show dismiss/delete button for all reminders
                 IconButton(
                     onClick = onDismissClick,
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
                         Icons.Default.Close,
-                        contentDescription = "Dismiss",
+                        contentDescription = if (isCompleted) "Dismiss" else "Delete",
                         tint = TextSecondary,
                         modifier = Modifier.size(20.dp)
-                    )
-                }
-            } else {
-                // Show complete button (circle) for pending reminders
-                IconButton(
-                    onClick = onCompleteClick,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        Icons.Default.RadioButtonUnchecked,
-                        contentDescription = "Mark as complete",
-                        tint = Blue600,
-                        modifier = Modifier.size(24.dp)
                     )
                 }
             }

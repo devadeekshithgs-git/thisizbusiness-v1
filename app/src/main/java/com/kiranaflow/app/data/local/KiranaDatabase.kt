@@ -19,9 +19,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         StockMovementEntity::class,
         TransactionEditHistoryEntity::class,
         ReminderEntity::class,
-        OutboxEntity::class
+        OutboxEntity::class,
+        BillingSessionEntity::class
     ],
-    version = 17, // v17: controlled transaction edit + audit tables
+    version = 18, // v18: billing sessions (multi-tab billing)
     exportSchema = false
 )
 abstract class KiranaDatabase : RoomDatabase() {
@@ -34,6 +35,7 @@ abstract class KiranaDatabase : RoomDatabase() {
     abstract fun transactionEditHistoryDao(): TransactionEditHistoryDao
     abstract fun reminderDao(): ReminderDao
     abstract fun outboxDao(): OutboxDao
+    abstract fun billingSessionDao(): BillingSessionDao
 
     companion object {
         @Volatile
@@ -269,6 +271,24 @@ abstract class KiranaDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS billing_sessions (
+                        sessionId TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        customerId INTEGER,
+                        customerName TEXT,
+                        itemsJson TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        PRIMARY KEY(sessionId)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context): KiranaDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -285,7 +305,8 @@ abstract class KiranaDatabase : RoomDatabase() {
                     MIGRATION_13_14,
                     MIGRATION_14_15,
                     MIGRATION_15_16,
-                    MIGRATION_16_17
+                    MIGRATION_16_17,
+                    MIGRATION_17_18
                 )
                 .fallbackToDestructiveMigration()
                 .build()

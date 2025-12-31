@@ -111,6 +111,9 @@ dependencies {
     // JSON (used for GST export models with @SerializedName)
     implementation("com.google.code.gson:gson:2.10.1")
 
+    implementation("org.apache.poi:poi:5.2.5")
+    implementation("org.apache.poi:poi-ooxml:5.2.5")
+
     // DataStore (Shop Settings persistence)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
@@ -151,10 +154,8 @@ dependencies {
     // it into the APK. We invoke it via reflection from the OCR flow.
     runtimeOnly("com.google.ai.edge.litertlm:litertlm-android:0.8.0")
 
-    // GST exports
-    implementation("com.google.code.gson:gson:2.10.1")
-    implementation("org.apache.poi:poi:5.2.5")
-    implementation("org.apache.poi:poi-ooxml:5.2.5")
+    // Swipe-Animated-Button library for order confirmation
+    implementation("com.github.maxwell-kimaiyo:Swipe-Animated-Button:0.1.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

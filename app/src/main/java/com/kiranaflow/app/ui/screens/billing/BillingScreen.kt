@@ -51,6 +51,7 @@ import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
 import com.kiranaflow.app.ui.components.ValleyTopBar
+import com.kiranaflow.app.ui.components.SwipeToConfirmButton
 import com.kiranaflow.app.ui.components.dialogs.CompletePaymentModal
 import com.kiranaflow.app.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +73,7 @@ import com.kiranaflow.app.util.ReceiptImageRenderer
 import com.kiranaflow.app.util.ReceiptRenderData
 import com.kiranaflow.app.util.ReceiptRenderItem
 import android.widget.Toast
+import com.kiranaflow.app.ui.screens.scanner.ScanMode
 
 // Save/restore scanner overlay state across configuration changes (e.g., landscape rotation).
 private val BillingScanOverlayStateSaver = androidx.compose.runtime.saveable.Saver<BillingScanOverlayState, List<Any?>>(
@@ -113,6 +115,8 @@ fun BillingScreen(
     SideEffect { Log.d("BillingScreen", "BillingScreen composed") }
     // #endregion
 
+    val sessions by viewModel.sessions.collectAsState()
+    val activeSessionId by viewModel.activeSessionId.collectAsState()
     val billItems by viewModel.billItems.collectAsState()
     val totalAmount by viewModel.totalAmount.collectAsState()
     // Persisted shop settings (for UPI QR)
@@ -128,6 +132,12 @@ fun BillingScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     var showCheckoutDialog by remember { mutableStateOf(false) }
+    var swipeButtonResetTrigger by remember { mutableStateOf(false) }
+    // Enhanced swipe button state management
+    var isSwipeButtonLoading by remember { mutableStateOf(false) }
+    var isSwipeButtonSuccess by remember { mutableStateOf(false) }
+    var isSwipeButtonError by remember { mutableStateOf(false) }
+    var swipeButtonErrorMessage by remember { mutableStateOf("Order failed. Please try again.") }
     // Must survive rotation; otherwise scanner overlay exits on landscape change.
     var showBillingScanner by rememberSaveable { mutableStateOf(false) }
     var scanOverlayState by rememberSaveable(stateSaver = BillingScanOverlayStateSaver) {
@@ -147,7 +157,30 @@ fun BillingScreen(
     var quickAddErrorText by remember { mutableStateOf<String?>(null) }
     var stockBlockedIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
 
-    // Loose items: step is in KG (e.g., 0.25kg) to match BillingViewModel qty units.
+    // Enhanced swipe button handler with state management
+    val scope = rememberCoroutineScope()
+    val handleSwipeComplete: () -> Unit = {
+        isSwipeButtonLoading = true
+        // Simulate order processing - in real implementation, this would call ViewModel
+        // For now, we'll show the checkout dialog as before but with loading state
+        scope.launch {
+            try {
+                // Show loading for a moment to demonstrate the feature
+                delay(1000)
+                isSwipeButtonLoading = false
+                isSwipeButtonSuccess = true
+                // Show checkout dialog after success animation
+                delay(500)
+                showCheckoutDialog = true
+                // Reset states after dialog opens
+                isSwipeButtonSuccess = false
+            } catch (e: Exception) {
+                isSwipeButtonLoading = false
+                isSwipeButtonError = true
+                swipeButtonErrorMessage = "Order failed: ${e.message}"
+            }
+        }
+    }
     val looseStepByItemId = remember { mutableStateMapOf<Int, Double>() }
     var customWeightForItemId by remember { mutableStateOf<Int?>(null) }
     var customWeightText by remember { mutableStateOf("") }
@@ -224,6 +257,10 @@ fun BillingScreen(
     }
 
     val newBarcode = navController.currentBackStackEntry?.savedStateHandle?.getLiveData<String>("barcode")?.observeAsState()
+
+    LaunchedEffect(Unit) {
+        viewModel.setScanMode(ScanMode.BARCODE)
+    }
 
     LaunchedEffect(newBarcode) {
         newBarcode?.value?.let {
@@ -327,6 +364,18 @@ fun BillingScreen(
                         )
                     }
                     item { Spacer(modifier = Modifier.height(6.dp)) }
+                    item {
+                        val activeId = activeSessionId
+                        if (activeId != null && sessions.isNotEmpty()) {
+                            BillingTabsBar(
+                                sessions = sessions,
+                                activeSessionId = activeId,
+                                onTabSelected = viewModel::switchSession,
+                                onNewTab = viewModel::createNewSession,
+                                onCloseTab = viewModel::closeSession
+                            )
+                        }
+                    }
                     item {
                         // Mode switch: Bill Customer vs Record Expense
                         Row(
@@ -451,7 +500,10 @@ fun BillingScreen(
                             }
                         }
                     } else {
-                        items(billItems) { billItem ->
+                        items(
+                            items = billItems,
+                            key = { it.item.id }
+                        ) { billItem ->
                             val isLoose = billItem.item.isLoose
                             val isBlocked = stockBlockedIds.contains(billItem.item.id)
                             if (isLoose) {
@@ -534,21 +586,18 @@ fun BillingScreen(
                                 Text("₹${totalAmount.toInt()}", fontSize = 28.sp, fontWeight = FontWeight.Black, color = TextPrimary)
                             }
                             Spacer(modifier = Modifier.height(10.dp))
-                            Button(
-                                onClick = { showCheckoutDialog = true },
+                            SwipeToConfirmButton(
+                                onSwipeComplete = handleSwipeComplete,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(52.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = ProfitGreen,
-                                    contentColor = Color.White
-                                )
-                            ) {
-                                Icon(Icons.Default.Check, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Checkout", fontWeight = FontWeight.Bold, color = Color.White)
-                            }
+                                    .height(56.dp),
+                                resetTrigger = swipeButtonResetTrigger,
+                                enabled = billItems.isNotEmpty(),
+                                isLoading = isSwipeButtonLoading,
+                                isSuccess = isSwipeButtonSuccess,
+                                isError = isSwipeButtonError,
+                                errorMessage = swipeButtonErrorMessage
+                            )
                         }
                     }
                 } else {
@@ -966,6 +1015,8 @@ fun BillingScreen(
         BillingScannerOverlay(
             overlayState = scanOverlayState,
             billItems = billItems,
+            scanMode = viewModel.scanMode,
+            onSetScanMode = viewModel::setScanMode,
             onSetQty = { itemId, qty ->
                 viewModel.updateItemQuantity(itemId, qty)
             },
@@ -977,6 +1028,10 @@ fun BillingScreen(
                 // When user scans again, clear previous NotFound state immediately.
                 if (scanOverlayState is BillingScanOverlayState.NotFound) scanOverlayState = BillingScanOverlayState.Idle
                 viewModel.addItemToCartByBarcode(barcode)
+            },
+            onQrScanned = { payload ->
+                if (scanOverlayState is BillingScanOverlayState.NotFound) scanOverlayState = BillingScanOverlayState.Idle
+                viewModel.addItemToCartByQrPayload(payload)
             },
             onAddToInventory = { barcode ->
                 showBillingScanner = false
@@ -1006,10 +1061,24 @@ fun BillingScreen(
             customers = customers,
             shopName = shopSettings.shopName,
             upiId = shopSettings.upiId,
-            onDismiss = { showCheckoutDialog = false },
+            onDismiss = { 
+                showCheckoutDialog = false
+                swipeButtonResetTrigger = !swipeButtonResetTrigger
+                // Reset enhanced swipe button states
+                isSwipeButtonLoading = false
+                isSwipeButtonSuccess = false
+                isSwipeButtonError = false
+                swipeButtonErrorMessage = "Order failed. Please try again."
+            },
             onComplete = { customerId, paymentMethod ->
                 viewModel.completeBill(paymentMethod, customerId)
                 showCheckoutDialog = false
+                swipeButtonResetTrigger = !swipeButtonResetTrigger
+                // Reset enhanced swipe button states
+                isSwipeButtonLoading = false
+                isSwipeButtonSuccess = false
+                isSwipeButtonError = false
+                swipeButtonErrorMessage = "Order failed. Please try again."
                 onCompletePayment()
             },
             onAddCustomer = { name, phone10 ->
@@ -1369,9 +1438,12 @@ private fun DigitalBillPromptDialog(
 private fun BillingScannerOverlay(
     overlayState: BillingScanOverlayState,
     billItems: List<BoxCartItem>,
+    scanMode: ScanMode,
+    onSetScanMode: (ScanMode) -> Unit,
     onSetQty: (Int, Double) -> Unit,
     onDismiss: () -> Unit,
     onBarcodeScanned: (String) -> Unit,
+    onQrScanned: (String) -> Unit,
     onAddToInventory: (String) -> Unit
 ) {
     val scannedLine = when (overlayState) {
@@ -1405,11 +1477,42 @@ private fun BillingScannerOverlay(
         ScannerScreen(
             isContinuous = true,
             onBarcodeScanned = onBarcodeScanned,
+            onQrScanned = onQrScanned,
             onClose = onDismiss,
+            scanMode = scanMode,
             backgroundColor = Color.Transparent,
             showCloseButton = false,
             showViewfinder = false
         )
+
+        // QR toggle positioned above the scan frame, horizontally centered
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = (frameHeight / 2 + 40.dp))
+                .padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(14.dp),
+            color = Color.Black.copy(alpha = 0.55f)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Scan QR Code",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp
+                )
+                Switch(
+                    checked = scanMode == ScanMode.QR,
+                    onCheckedChange = { enabled ->
+                        onSetScanMode(if (enabled) ScanMode.QR else ScanMode.BARCODE)
+                    }
+                )
+            }
+        }
 
         // Big centered scan frame; status overlay must match this size (wireframe behavior)
         val frameModifier = Modifier
@@ -1426,10 +1529,12 @@ private fun BillingScannerOverlay(
             when (overlayState) {
                 BillingScanOverlayState.Idle -> Unit
                 is BillingScanOverlayState.Added -> {
+                    val location = scannedLine?.item?.rackLocation?.trim().orEmpty()
+                    val subtitle = if (location.isBlank()) overlayState.name else "${overlayState.name} • $location"
                     FrameStatusOverlay(
                         isSuccess = true,
                         title = "Item Added!",
-                        subtitle = overlayState.name,
+                        subtitle = subtitle,
                         qtyText = formatQty(scannedQty),
                         onInc = { onSetQty(overlayState.itemId, scannedQty + qtyStep) },
                         onDec = {
@@ -1649,6 +1754,18 @@ fun CartItemCard(
                     maxLines = 2,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
+
+                if (!rackLocation.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = rackLocation,
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(10.dp))
 

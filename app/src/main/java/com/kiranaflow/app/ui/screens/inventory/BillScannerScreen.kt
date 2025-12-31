@@ -156,58 +156,7 @@ fun BillScannerScreen(
 
             item { Spacer(modifier = Modifier.height(2.dp)) }
 
-            item {
-                Surface(
-                    color = GrayBg,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Vendor Bill OCR", fontWeight = FontWeight.Bold, color = TextPrimary)
-                        Text("Supports: Camera, JPG/PNG/PDF", fontSize = 12.sp, color = TextSecondary)
-                        KiranaButton(
-                            text = "Scan bill (document scanner)",
-                            onClick = {
-                                val act = context as? Activity
-                                if (act == null) {
-                                    Toast.makeText(context, "Scanner unavailable", Toast.LENGTH_SHORT).show()
-                                    return@KiranaButton
-                                }
-                                scope.launch {
-                                    val sender = runCatching { DocumentScannerHelper.getStartScanIntent(act) }.getOrNull()
-                                    if (sender == null) {
-                                        Toast.makeText(context, "Scanner unavailable", Toast.LENGTH_SHORT).show()
-                                        return@launch
-                                    }
-                                    pendingDocScanIntentSender = sender
-                                    docScannerLauncher.launch(IntentSenderRequest.Builder(sender).build())
-                                }
-                            },
-                            icon = Icons.Default.FileOpen,
-                            colors = ButtonDefaults.buttonColors(containerColor = Blue600, contentColor = BgPrimary)
-                        )
-                        KiranaButton(
-                            text = "Scan bill (camera)",
-                            onClick = {
-                                val dir = File(context.cacheDir, "bill_scans").apply { mkdirs() }
-                                val photoFile = File.createTempFile("bill_scan_", ".jpg", dir)
-                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
-                                pendingCameraUri = uri
-                                cameraLauncher.launch(uri)
-                            },
-                            icon = Icons.Default.FileOpen,
-                            colors = ButtonDefaults.buttonColors(containerColor = Blue600, contentColor = BgPrimary)
-                        )
-                        KiranaButton(
-                            text = "Choose bill (image/PDF)",
-                            onClick = { billPicker.launch(arrayOf("image/*", "application/pdf")) },
-                            icon = Icons.Default.FileOpen,
-                            colors = ButtonDefaults.buttonColors(containerColor = Blue600, contentColor = BgPrimary)
-                        )
-                    }
-                }
-            }
-
+            
             item {
                 Surface(
                     color = GrayBg,

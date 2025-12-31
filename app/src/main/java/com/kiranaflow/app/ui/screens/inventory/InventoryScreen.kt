@@ -53,8 +53,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -119,6 +117,8 @@ fun InventoryScreen(
     var showBillScanner by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
     var purchaseDraft by remember { mutableStateOf<PurchaseDraft?>(null) }
+    var showStockAdjustmentDialog by remember { mutableStateOf(false) }
+    var scannedItemForStockAdjustment by remember { mutableStateOf<ItemEntity?>(null) }
     val billDraft by billScanViewModel.draft.collectAsState()
 
     var saveEventToConfirm by remember { mutableStateOf<InventoryViewModel.ItemSaveEvent.Success?>(null) }
@@ -239,8 +239,16 @@ fun InventoryScreen(
     LaunchedEffect(scannedBarcodeValue) {
         if (!scannedBarcodeValue.isNullOrBlank()) {
             viewModel.onBarcodeScanned(scannedBarcodeValue)
-            // Re-open the Add Item dialog after returning from scanner.
-            showAddModal = true
+            // Check if we found an existing item
+            val existingScannedItem = viewModel.scannedItem.value
+            if (existingScannedItem != null) {
+                // Show stock adjustment dialog for existing items
+                scannedItemForStockAdjustment = existingScannedItem
+                showStockAdjustmentDialog = true
+            } else {
+                // Re-open the Add Item dialog for new items
+                showAddModal = true
+            }
             // Consume the barcode so it doesn't retrigger on recomposition.
             navController.currentBackStackEntry?.savedStateHandle?.set("barcode", null)
         }
@@ -300,13 +308,32 @@ fun InventoryScreen(
             // Search as first content item
             item {
                 Box(modifier = Modifier.padding(horizontal = 24.dp)) {
-                    KiranaInput(
-                        value = searchQuery,
-                        onValueChange = viewModel::onSearchChange,
-                        placeholder = "Search items...",
-                        icon = Icons.Default.Search,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        KiranaInput(
+                            value = searchQuery,
+                            onValueChange = viewModel::onSearchChange,
+                            placeholder = "Search items...",
+                            icon = Icons.Default.Search,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = { navController.navigate("scanner/inventory") },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(White, RoundedCornerShape(12.dp))
+                        ) {
+                            Icon(
+                                Icons.Default.CameraAlt,
+                                contentDescription = "Scan barcode",
+                                tint = Blue600,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -340,7 +367,7 @@ fun InventoryScreen(
                                 ) {
                                     Icon(Icons.Default.CameraAlt, contentDescription = null, tint = TextSecondary)
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Scan Bill", fontWeight = FontWeight.Bold, color = TextSecondary)
+                                    Text("Add Inventory", fontWeight = FontWeight.Bold, color = TextSecondary)
                                 }
                                 TextButton(onClick = { selectionMode = true }) {
                                     Icon(Icons.Default.Checklist, contentDescription = null, tint = TextSecondary)
@@ -579,6 +606,46 @@ fun InventoryScreen(
                     }
                     purchaseDraft = null
                 }
+            }
+        )
+    }
+
+    // Stock Adjustment Dialog for barcode scanned items
+    scannedItemForStockAdjustment?.let { item ->
+        StockAdjustmentDialog(
+            item = item,
+            onDismiss = {
+                showStockAdjustmentDialog = false
+                scannedItemForStockAdjustment = null
+                viewModel.clearScannedItem()
+            },
+            onAdjustStock = { delta: Int ->
+                viewModel.adjustStock(item, delta)
+                showStockAdjustmentDialog = false
+                scannedItemForStockAdjustment = null
+                viewModel.clearScannedItem()
+                Toast.makeText(context, "Stock adjusted for ${item.name}", Toast.LENGTH_SHORT).show()
+            },
+            onAddReceivedStock = { qty: Int ->
+                viewModel.addReceivedStock(item, qty)
+                showStockAdjustmentDialog = false
+                scannedItemForStockAdjustment = null
+                viewModel.clearScannedItem()
+                Toast.makeText(context, "Stock added for ${item.name}", Toast.LENGTH_SHORT).show()
+            },
+            onSetStock = { newStock: Int ->
+                viewModel.setStock(item, newStock)
+                showStockAdjustmentDialog = false
+                scannedItemForStockAdjustment = null
+                viewModel.clearScannedItem()
+                Toast.makeText(context, "Stock set for ${item.name}", Toast.LENGTH_SHORT).show()
+            },
+            onSetStockKg = { newKg: Double ->
+                viewModel.setStockKg(item, newKg)
+                showStockAdjustmentDialog = false
+                scannedItemForStockAdjustment = null
+                viewModel.clearScannedItem()
+                Toast.makeText(context, "Stock set for ${item.name}", Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -1708,16 +1775,17 @@ fun AddItemDialog(
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     // Crop/edit launcher (uCrop)
-    val cropLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val out = result.data?.let { UCrop.getOutput(it) }
-            if (out != null) imageUri = out.toString()
-        } else if (result.resultCode == Activity.RESULT_CANCELED) {
-            // If user cancels crop, keep the last known image (camera/gallery source if present).
-            val src = pendingCameraUri
-            if (imageUri.isNullOrBlank() && src != null) imageUri = src.toString()
+    val cropLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                val out = result.data?.let { UCrop.getOutput(it) }
+                if (out != null) imageUri = out.toString()
+            } else if (result.resultCode == Activity.RESULT_CANCELED) {
+                // If user cancels crop, keep the last known image (camera/gallery source if present).
+                val src = pendingCameraUri
+                if (imageUri.isNullOrBlank() && src != null) imageUri = src.toString()
+            }
         }
-    }
 
     val launchCrop: (Uri) -> Unit = { source ->
         val destDir = File(context.cacheDir, "crops").apply { mkdirs() }
@@ -1744,21 +1812,23 @@ fun AddItemDialog(
         imageUri = source.toString()
     }
 
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) {
-            val src = pendingCameraUri
-            if (src != null) {
-                // After capture, open crop/edit flow.
-                launchCrop(src)
+    val cameraLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+            if (success) {
+                val src = pendingCameraUri
+                if (src != null) {
+                    // After capture, open crop/edit flow.
+                    launchCrop(src)
+                }
             }
         }
-    }
-    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            // After picking, open crop/edit flow.
-            launchCrop(uri)
+    val galleryLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) {
+                // After picking, open crop/edit flow.
+                launchCrop(uri)
+            }
         }
-    }
 
     LaunchedEffect(scannedBarcode) {
         if (scannedBarcode != null) {
@@ -1818,7 +1888,12 @@ fun AddItemDialog(
 
     val filteredVendors = remember(vendors, vendorQuery) {
         if (vendorQuery.isBlank()) vendors
-        else vendors.filter { it.name.contains(vendorQuery, true) || it.phone.contains(vendorQuery) }
+        else vendors.filter {
+            it.name.contains(
+                vendorQuery,
+                true
+            ) || it.phone.contains(vendorQuery)
+        }
     }
     val selectedVendorName = remember(vendors, selectedVendorId) {
         vendors.firstOrNull { it.id == selectedVendorId }?.name.orEmpty()
@@ -1859,610 +1934,1047 @@ fun AddItemDialog(
                 color = White
             ) {
                 Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        if (existingItem != null && existingItem.id != 0) "Edit Product" else "Add New Product",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
-                    )
-                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null) }
-                }
-
-                Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                    // Product image picker (Camera + Gallery)
-                    Surface(
-                        modifier = Modifier
-                            .size(120.dp)
-                            .align(Alignment.CenterHorizontally),
-                        shape = RoundedCornerShape(16.dp),
-                        color = Gray50
-                    ) {
-                        if (!imageUri.isNullOrBlank()) {
-                            AsyncImage(
-                                model = imageUri,
-                                contentDescription = "Product photo",
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Image, contentDescription = null, tint = Gray200, modifier = Modifier.size(48.dp))
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                val photoFile = File.createTempFile("kirana_photo_", ".jpg", context.cacheDir)
-                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
-                                pendingCameraUri = uri
-                                cameraLauncher.launch(uri)
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Camera")
-                        }
-                        OutlinedButton(
-                            onClick = { galleryLauncher.launch("image/*") },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(Icons.Default.PhotoLibrary, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Gallery")
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    KiranaInput(value = name, onValueChange = { name = it }, placeholder = "e.g. Basmati Rice 5kg", label = "Item Name")
-                    if (showNameError && name.trim().isBlank()) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Item name is required",
-                            color = LossRed,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    // Category dropdown (search + add new)
-                    Text("CATEGORY", style = MaterialTheme.typography.labelSmall)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    ExposedDropdownMenuBox(
-                        expanded = showCategoryDropdown,
-                        onExpandedChange = { showCategoryDropdown = !showCategoryDropdown }
-                    ) {
-                        OutlinedTextField(
-                            value = category,
-                            onValueChange = {},
-                            readOnly = true,
-                            placeholder = { Text("Select category...") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showCategoryDropdown) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor(),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedContainerColor = White,
-                                unfocusedContainerColor = White,
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary
-                            )
-                        )
-                        ExposedDropdownMenu(
-                            expanded = showCategoryDropdown,
-                            onDismissRequest = { showCategoryDropdown = false }
-                        ) {
-                            // Search header (must be focusable)
-                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                OutlinedTextField(
-                                    value = categoryQuery,
-                                    onValueChange = { categoryQuery = it },
-                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                                    placeholder = { Text("Search category...") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedContainerColor = White,
-                                        unfocusedContainerColor = White,
-                                        focusedTextColor = TextPrimary,
-                                        unfocusedTextColor = TextPrimary
-                                    )
-                                )
-                            }
-                            Divider(color = Gray200)
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Add, contentDescription = null, tint = Blue600)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("+ Add new category", color = Blue600, fontWeight = FontWeight.Bold)
-                                    }
-                                },
-                                onClick = { showAddCategoryDialog = true }
-                            )
-                            filteredCategories.forEach { c ->
-                                DropdownMenuItem(
-                                    text = { Text(c) },
-                                    onClick = {
-                                        category = c
-                                        showCategoryDropdown = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Vendor dropdown (search + add new)
-                    Text("VENDOR (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    ExposedDropdownMenuBox(
-                        expanded = showVendorDropdown,
-                        onExpandedChange = { showVendorDropdown = !showVendorDropdown }
-                    ) {
-                        OutlinedTextField(
-                            value = selectedVendorName,
-                            onValueChange = {},
-                            readOnly = true,
-                            placeholder = { Text("Select vendor...") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showVendorDropdown) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor(),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedContainerColor = White,
-                                unfocusedContainerColor = White,
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary
-                            )
-                        )
-                        ExposedDropdownMenu(
-                            expanded = showVendorDropdown,
-                            onDismissRequest = { showVendorDropdown = false }
-                        ) {
-                            // Search header (must be focusable)
-                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                OutlinedTextField(
-                                    value = vendorQuery,
-                                    onValueChange = { vendorQuery = it },
-                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                                    placeholder = { Text("Search vendor...") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedContainerColor = White,
-                                        unfocusedContainerColor = White,
-                                        focusedTextColor = TextPrimary,
-                                        unfocusedTextColor = TextPrimary
-                                    )
-                                )
-                            }
-                            Divider(color = Gray200)
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Add, contentDescription = null, tint = Blue600)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("+ Add new vendor", color = Blue600, fontWeight = FontWeight.Bold)
-                                    }
-                                },
-                                onClick = { showAddVendorDialog = true }
-                            )
-                            filteredVendors.forEach { v ->
-                                DropdownMenuItem(
-                                    text = { Text(v.name) },
-                                    onClick = {
-                                        selectedVendorId = v.id
-                                        showVendorDropdown = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    
-                    // Barcode Scanner Button
-                    Text("BARCODE (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Box(modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp)
-                        .border(1.dp, Gray200, RoundedCornerShape(16.dp))
-                        .clickable { onScanBarcode() }
-                        .padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (barcode.isNotBlank()) {
-                            Text(barcode, fontWeight = FontWeight.Bold)
-                        } else {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Search, null, tint = KiranaGreen)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Scan Barcode", color = KiranaGreen, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                    if (offLoading) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Looking up product…", fontSize = 12.sp, color = Gray400)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        KiranaInput(
-                            value = costPrice,
-                            onValueChange = { costPrice = InputFilters.decimal(it) },
-                            placeholder = "0",
-                            label = if (isLoose) "Cost per KG (₹)" else "Cost Price (₹)",
-                            modifier = Modifier.weight(1f),
-                            keyboardType = KeyboardType.Decimal
-                        )
-                        KiranaInput(
-                            value = sellingPrice,
-                            onValueChange = { sellingPrice = InputFilters.decimal(it) },
-                            placeholder = "0",
-                            label = if (isLoose) "Price per KG (₹)" else "Selling Price (₹)",
-                            modifier = Modifier.weight(1f),
-                            keyboardType = KeyboardType.Decimal
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("LOOSE ITEM", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                            Text("Sold by weight (Kg)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        }
-                        Switch(
-                            checked = isLoose,
-                            onCheckedChange = { checked -> isLoose = checked }
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        KiranaInput(
-                            value = stock,
-                            onValueChange = {
-                                stock = if (isLoose) InputFilters.decimal(it, maxDecimals = 3) else InputFilters.digitsOnly(it)
-                            },
-                            placeholder = "0",
-                            label = if (isLoose) "Stock (kg)" else "Stock",
-                            modifier = Modifier.weight(1f),
-                            keyboardType = if (isLoose) KeyboardType.Decimal else KeyboardType.Number
-                        )
-                        KiranaInput(
-                            value = gst,
-                            onValueChange = { gst = InputFilters.decimal(it, maxDecimals = 2) },
-                            placeholder = "e.g. 18",
-                            label = "GST % (Optional)",
-                            modifier = Modifier.weight(1f),
-                            keyboardType = KeyboardType.Decimal
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("HSN (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
-                        IconButton(onClick = { showHsnInfo = !showHsnInfo }) {
-                            Icon(Icons.Default.Info, contentDescription = "HSN info", tint = TextSecondary)
-                        }
-                    }
-                    KiranaInput(
-                        value = hsnCode,
-                        onValueChange = {
-                            hsnTouched = true
-                            hsnCode = InputFilters.digitsOnly(it, maxLen = 8)
-                            showHsnError = false
-                        },
-                        placeholder = "e.g. 1006",
-                        label = "HSN (4–8 digits)",
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardType = KeyboardType.Number
-                    )
-                    if (showHsnError) {
-                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "HSN should be 4–8 digits (optional field).",
-                            color = LossRed,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
+                            if (existingItem != null && existingItem.id != 0) "Edit Product" else "Add New Product",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp
                         )
+                        IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null) }
                     }
-                    if (hsnCode.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = saveHsnAsCategoryDefault,
-                                onCheckedChange = { saveHsnAsCategoryDefault = it }
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                "Use this as default HSN for category “${category.trim()}”",
-                                color = TextSecondary
-                            )
-                        }
-                    }
-                    AnimatedVisibility(visible = showHsnInfo) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "HSN (Harmonized System of Nomenclature) is used to classify goods for GST and compliance. " +
-                                    "It’s product/category-based (not brand-based). This field is optional and can be filled later.",
-                                color = TextSecondary,
-                                fontSize = 12.sp
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            TextButton(onClick = { uriHandler.openUri("https://tutorial.gst.gov.in/userguide/taxpayersdashboard/Search_HSN_SAC_Tax_Rates_manual.htm") }) {
-                                Text("Official GST: HSN/SAC search guide", fontWeight = FontWeight.Bold)
-                            }
-                            TextButton(onClick = { uriHandler.openUri("https://www.cbic.gov.in/") }) {
-                                Text("Official CBIC (Customs) reference", fontWeight = FontWeight.Bold)
+
+                    Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                        // Product image picker (Camera + Gallery)
+                        Surface(
+                            modifier = Modifier
+                                .size(120.dp)
+                                .align(Alignment.CenterHorizontally),
+                            shape = RoundedCornerShape(16.dp),
+                            color = Gray50
+                        ) {
+                            if (!imageUri.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = imageUri,
+                                    contentDescription = "Product photo",
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Image,
+                                        contentDescription = null,
+                                        tint = Gray200,
+                                        modifier = Modifier.size(48.dp)
+                                    )
+                                }
                             }
                         }
-                    }
-                    if (!isLoose) {
                         Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    val photoFile = File.createTempFile(
+                                        "kirana_photo_",
+                                        ".jpg",
+                                        context.cacheDir
+                                    )
+                                    val uri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        photoFile
+                                    )
+                                    pendingCameraUri = uri
+                                    cameraLauncher.launch(uri)
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Camera")
+                            }
+                            OutlinedButton(
+                                onClick = { galleryLauncher.launch("image/*") },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Icon(Icons.Default.PhotoLibrary, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Gallery")
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+
                         KiranaInput(
-                            value = batchSize,
-                            onValueChange = { batchSize = InputFilters.digitsOnly(it, maxLen = 5) },
-                            placeholder = "e.g. 12",
-                            label = "Batch size (Optional)",
+                            value = name,
+                            onValueChange = { name = it },
+                            placeholder = "e.g. Basmati Rice 5kg",
+                            label = "Item Name"
+                        )
+                        if (showNameError && name.trim().isBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Item name is required",
+                                color = LossRed,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        // Category dropdown (search + add new)
+                        Text("CATEGORY", style = MaterialTheme.typography.labelSmall)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        ExposedDropdownMenuBox(
+                            expanded = showCategoryDropdown,
+                            onExpandedChange = { showCategoryDropdown = !showCategoryDropdown }
+                        ) {
+                            OutlinedTextField(
+                                value = category,
+                                onValueChange = {},
+                                readOnly = true,
+                                placeholder = { Text("Select category...") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showCategoryDropdown) },
+                                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = White,
+                                    unfocusedContainerColor = White,
+                                    focusedTextColor = TextPrimary,
+                                    unfocusedTextColor = TextPrimary
+                                )
+                            )
+                            ExposedDropdownMenu(
+                                expanded = showCategoryDropdown,
+                                onDismissRequest = { showCategoryDropdown = false }
+                            ) {
+                                // Search header (must be focusable)
+                                Box(
+                                    modifier = Modifier.padding(
+                                        horizontal = 12.dp,
+                                        vertical = 8.dp
+                                    )
+                                ) {
+                                    OutlinedTextField(
+                                        value = categoryQuery,
+                                        onValueChange = { categoryQuery = it },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.Search,
+                                                contentDescription = null
+                                            )
+                                        },
+                                        placeholder = { Text("Search category...") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedContainerColor = White,
+                                            unfocusedContainerColor = White,
+                                            focusedTextColor = TextPrimary,
+                                            unfocusedTextColor = TextPrimary
+                                        )
+                                    )
+                                }
+                                Divider(color = Gray200)
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                Icons.Default.Add,
+                                                contentDescription = null,
+                                                tint = Blue600
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                "+ Add new category",
+                                                color = Blue600,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    },
+                                    onClick = { showAddCategoryDialog = true }
+                                )
+                                filteredCategories.forEach { c ->
+                                    DropdownMenuItem(
+                                        text = { Text(c) },
+                                        onClick = {
+                                            category = c
+                                            showCategoryDropdown = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Vendor dropdown (search + add new)
+                        Text("VENDOR (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        ExposedDropdownMenuBox(
+                            expanded = showVendorDropdown,
+                            onExpandedChange = { showVendorDropdown = !showVendorDropdown }
+                        ) {
+                            OutlinedTextField(
+                                value = selectedVendorName,
+                                onValueChange = {},
+                                readOnly = true,
+                                placeholder = { Text("Select vendor...") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showVendorDropdown) },
+                                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = White,
+                                    unfocusedContainerColor = White,
+                                    focusedTextColor = TextPrimary,
+                                    unfocusedTextColor = TextPrimary
+                                )
+                            )
+                            ExposedDropdownMenu(
+                                expanded = showVendorDropdown,
+                                onDismissRequest = { showVendorDropdown = false }
+                            ) {
+                                // Search header (must be focusable)
+                                Box(
+                                    modifier = Modifier.padding(
+                                        horizontal = 12.dp,
+                                        vertical = 8.dp
+                                    )
+                                ) {
+                                    OutlinedTextField(
+                                        value = vendorQuery,
+                                        onValueChange = { vendorQuery = it },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.Search,
+                                                contentDescription = null
+                                            )
+                                        },
+                                        placeholder = { Text("Search vendor...") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedContainerColor = White,
+                                            unfocusedContainerColor = White,
+                                            focusedTextColor = TextPrimary,
+                                            unfocusedTextColor = TextPrimary
+                                        )
+                                    )
+                                }
+                                Divider(color = Gray200)
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                Icons.Default.Add,
+                                                contentDescription = null,
+                                                tint = Blue600
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                "+ Add new vendor",
+                                                color = Blue600,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    },
+                                    onClick = { showAddVendorDialog = true }
+                                )
+                                filteredVendors.forEach { v ->
+                                    DropdownMenuItem(
+                                        text = { Text(v.name) },
+                                        onClick = {
+                                            selectedVendorId = v.id
+                                            showVendorDropdown = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Barcode Scanner Button
+                        Text("BARCODE (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .border(1.dp, Gray200, RoundedCornerShape(16.dp))
+                            .clickable { onScanBarcode() }
+                            .padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (barcode.isNotBlank()) {
+                                Text(barcode, fontWeight = FontWeight.Bold)
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Search, null, tint = KiranaGreen)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "Scan Barcode",
+                                        color = KiranaGreen,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        if (offLoading) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Looking up product…", fontSize = 12.sp, color = Gray400)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            KiranaInput(
+                                value = costPrice,
+                                onValueChange = { costPrice = InputFilters.decimal(it) },
+                                placeholder = "0",
+                                label = if (isLoose) "Cost per KG (₹)" else "Cost Price (₹)",
+                                modifier = Modifier.weight(1f),
+                                keyboardType = KeyboardType.Decimal
+                            )
+                            KiranaInput(
+                                value = sellingPrice,
+                                onValueChange = { sellingPrice = InputFilters.decimal(it) },
+                                placeholder = "0",
+                                label = if (isLoose) "Price per KG (₹)" else "Selling Price (₹)",
+                                modifier = Modifier.weight(1f),
+                                keyboardType = KeyboardType.Decimal
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "LOOSE ITEM",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary
+                                )
+                                Text(
+                                    "Sold by weight (Kg)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                            Switch(
+                                checked = isLoose,
+                                onCheckedChange = { checked -> isLoose = checked }
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            KiranaInput(
+                                value = stock,
+                                onValueChange = {
+                                    stock = if (isLoose) InputFilters.decimal(
+                                        it,
+                                        maxDecimals = 3
+                                    ) else InputFilters.digitsOnly(it)
+                                },
+                                placeholder = "0",
+                                label = if (isLoose) "Stock (kg)" else "Stock",
+                                modifier = Modifier.weight(1f),
+                                keyboardType = if (isLoose) KeyboardType.Decimal else KeyboardType.Number
+                            )
+                            KiranaInput(
+                                value = gst,
+                                onValueChange = { gst = InputFilters.decimal(it, maxDecimals = 2) },
+                                placeholder = "e.g. 18",
+                                label = "GST % (Optional)",
+                                modifier = Modifier.weight(1f),
+                                keyboardType = KeyboardType.Decimal
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("HSN (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
+                            IconButton(onClick = { showHsnInfo = !showHsnInfo }) {
+                                Icon(
+                                    Icons.Default.Info,
+                                    contentDescription = "HSN info",
+                                    tint = TextSecondary
+                                )
+                            }
+                        }
+                        KiranaInput(
+                            value = hsnCode,
+                            onValueChange = {
+                                hsnTouched = true
+                                hsnCode = InputFilters.digitsOnly(it, maxLen = 8)
+                                showHsnError = false
+                            },
+                            placeholder = "e.g. 1006",
+                            label = "HSN (4–8 digits)",
                             modifier = Modifier.fillMaxWidth(),
                             keyboardType = KeyboardType.Number
                         )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        // Location input added
-                        KiranaInput(value = location, onValueChange = { location = it }, placeholder = "Rack A1", label = "Location", modifier = Modifier.weight(1f))
-                        KiranaInput(
-                            value = reorderPoint,
-                            onValueChange = { reorderPoint = InputFilters.digitsOnly(it) },
-                            placeholder = "10",
-                            label = "Reorder Point",
-                            modifier = Modifier.weight(1f),
-                            keyboardType = KeyboardType.Number
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("EXPIRY (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = expiryDateMillis?.let {
-                            java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale.getDefault()).format(java.util.Date(it))
-                        }.orEmpty(),
-                        onValueChange = {},
-                        readOnly = true,
-                        placeholder = { Text("Select expiry date...") },
-                        trailingIcon = {
-                            IconButton(onClick = { showExpiryPicker = true }) {
-                                Icon(Icons.Default.DateRange, contentDescription = null, tint = TextSecondary)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = White,
-                            unfocusedContainerColor = White,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
-                    )
-                    if (expiryDateMillis != null) {
-                        TextButton(onClick = { expiryDateMillis = null }) { Text("Clear expiry") }
-                    }
-                    // (Vendor selection is above; remove old vendor text field)
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-                // Save + Delete (delete appears only when editing an existing item)
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    if (existingItem != null && existingItem.id != 0) {
-                        OutlinedButton(
-                            onClick = { showDeleteConfirm = true },
-                            modifier = Modifier.weight(1f).height(56.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(containerColor = LossRedBg, contentColor = LossRed),
-                            border = null
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, tint = LossRed)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Delete", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    KiranaButton(
-                        text = if (existingItem != null && existingItem.id != 0) "Save Changes" else "Save Product",
-                        onClick = {
-                            val cleanName = name.trim()
-                            if (cleanName.isBlank()) {
-                                showNameError = true
-                                return@KiranaButton
-                            }
-                            showNameError = false
-
-                            val cleanHsn = hsnCode.trim().ifBlank { null }
-                            if (cleanHsn != null && !GstValidator.isValidHsn(cleanHsn)) {
-                                showHsnError = true
-                                return@KiranaButton
-                            }
-                            if (saveHsnAsCategoryDefault) {
-                                scope.launch { onSaveCategoryHsnDefault(category, cleanHsn) }
-                            }
-                            onSave(
-                                cleanName,
-                                category,
-                                costPrice.toDoubleOrNull() ?: 0.0,
-                                sellingPrice.toDoubleOrNull() ?: 0.0,
-                                isLoose,
-                                if (isLoose) (sellingPrice.toDoubleOrNull() ?: 0.0) else 0.0,
-                                if (isLoose) (stock.toDoubleOrNull() ?: 0.0) else 0.0,
-                                if (isLoose) 0 else (stock.toIntOrNull() ?: 0),
-                                location,
-                                barcode,
-                                gst.toDoubleOrNull(),
-                                cleanHsn,
-                                reorderPoint.toIntOrNull(),
-                                imageUri,
-                                selectedVendorId,
-                                expiryDateMillis,
-                                batchSize.toIntOrNull()
+                        if (showHsnError) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "HSN should be 4–8 digits (optional field).",
+                                color = LossRed,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
-                        },
-                        enabled = !saving && name.trim().isNotBlank(),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = KiranaGreen, contentColor = White)
-                    )
+                        }
+                        if (hsnCode.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = saveHsnAsCategoryDefault,
+                                    onCheckedChange = { saveHsnAsCategoryDefault = it }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Use this as default HSN for category “${category.trim()}”",
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                        AnimatedVisibility(visible = showHsnInfo) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "HSN (Harmonized System of Nomenclature) is used to classify goods for GST and compliance. " +
+                                            "It’s product/category-based (not brand-based). This field is optional and can be filled later.",
+                                    color = TextSecondary,
+                                    fontSize = 12.sp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                TextButton(onClick = { uriHandler.openUri("https://tutorial.gst.gov.in/userguide/taxpayersdashboard/Search_HSN_SAC_Tax_Rates_manual.htm") }) {
+                                    Text(
+                                        "Official GST: HSN/SAC search guide",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                TextButton(onClick = { uriHandler.openUri("https://www.cbic.gov.in/") }) {
+                                    Text(
+                                        "Official CBIC (Customs) reference",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        if (!isLoose) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            KiranaInput(
+                                value = batchSize,
+                                onValueChange = {
+                                    batchSize = InputFilters.digitsOnly(it, maxLen = 5)
+                                },
+                                placeholder = "e.g. 12",
+                                label = "Batch size (Optional)",
+                                modifier = Modifier.fillMaxWidth(),
+                                keyboardType = KeyboardType.Number
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // Location input added
+                            KiranaInput(
+                                value = location,
+                                onValueChange = { location = it },
+                                placeholder = "Rack A1",
+                                label = "Location",
+                                modifier = Modifier.weight(1f)
+                            )
+                            KiranaInput(
+                                value = reorderPoint,
+                                onValueChange = { reorderPoint = InputFilters.digitsOnly(it) },
+                                placeholder = "10",
+                                label = "Reorder Point",
+                                modifier = Modifier.weight(1f),
+                                keyboardType = KeyboardType.Number
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("EXPIRY (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = expiryDateMillis?.let {
+                                java.text.SimpleDateFormat(
+                                    "dd MMM yyyy",
+                                    java.util.Locale.getDefault()
+                                ).format(java.util.Date(it))
+                            }.orEmpty(),
+                            onValueChange = {},
+                            readOnly = true,
+                            placeholder = { Text("Select expiry date...") },
+                            trailingIcon = {
+                                IconButton(onClick = { showExpiryPicker = true }) {
+                                    Icon(
+                                        Icons.Default.DateRange,
+                                        contentDescription = null,
+                                        tint = TextSecondary
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = White,
+                                unfocusedContainerColor = White,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            )
+                        )
+                        if (expiryDateMillis != null) {
+                            TextButton(onClick = {
+                                expiryDateMillis = null
+                            }) { Text("Clear expiry") }
+                        }
+                        // (Vendor selection is above; remove old vendor text field)
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    // Save + Delete (delete appears only when editing an existing item)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (existingItem != null && existingItem.id != 0) {
+                            OutlinedButton(
+                                onClick = { showDeleteConfirm = true },
+                                modifier = Modifier.weight(1f).height(56.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = LossRedBg,
+                                    contentColor = LossRed
+                                ),
+                                border = null
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = null,
+                                    tint = LossRed
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Delete", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        KiranaButton(
+                            text = if (existingItem != null && existingItem.id != 0) "Save Changes" else "Save Product",
+                            onClick = {
+                                val cleanName = name.trim()
+                                if (cleanName.isBlank()) {
+                                    showNameError = true
+                                    return@KiranaButton
+                                }
+                                showNameError = false
+
+                                val cleanHsn = hsnCode.trim().ifBlank { null }
+                                if (cleanHsn != null && !GstValidator.isValidHsn(cleanHsn)) {
+                                    showHsnError = true
+                                    return@KiranaButton
+                                }
+                                if (saveHsnAsCategoryDefault) {
+                                    scope.launch { onSaveCategoryHsnDefault(category, cleanHsn) }
+                                }
+                                onSave(
+                                    cleanName,
+                                    category,
+                                    costPrice.toDoubleOrNull() ?: 0.0,
+                                    sellingPrice.toDoubleOrNull() ?: 0.0,
+                                    isLoose,
+                                    if (isLoose) (sellingPrice.toDoubleOrNull() ?: 0.0) else 0.0,
+                                    if (isLoose) (stock.toDoubleOrNull() ?: 0.0) else 0.0,
+                                    if (isLoose) 0 else (stock.toIntOrNull() ?: 0),
+                                    location,
+                                    barcode,
+                                    gst.toDoubleOrNull(),
+                                    cleanHsn,
+                                    reorderPoint.toIntOrNull(),
+                                    imageUri,
+                                    selectedVendorId,
+                                    expiryDateMillis,
+                                    batchSize.toIntOrNull()
+                                )
+                            },
+                            enabled = !saving && name.trim().isNotBlank(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = KiranaGreen,
+                                contentColor = White
+                            )
+                        )
+                    }
                 }
             }
         }
-    }
 
-    if (showDeleteConfirm && existingItem != null && existingItem.id != 0) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Delete product?", fontWeight = FontWeight.Bold) },
-            text = { Text("This will remove '${existingItem.name}' from your inventory.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    onDelete(existingItem)
-                }) { Text("Delete", color = LossRed) }
-            },
-            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
-        )
-    }
+        if (showDeleteConfirm && existingItem != null && existingItem.id != 0) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirm = false },
+                title = { Text("Delete product?", fontWeight = FontWeight.Bold) },
+                text = { Text("This will remove '${existingItem.name}' from your inventory.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showDeleteConfirm = false
+                        onDelete(existingItem)
+                    }) { Text("Delete", color = LossRed) }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showDeleteConfirm = false
+                    }) { Text("Cancel") }
+                }
+            )
+        }
 
-    if (showExpiryPicker) {
-        val pickerState = rememberDatePickerState(initialSelectedDateMillis = expiryDateMillis)
-        DatePickerDialog(
-            onDismissRequest = { showExpiryPicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    expiryDateMillis = pickerState.selectedDateMillis
-                    showExpiryPicker = false
-                }) { Text("Set") }
-            },
-            dismissButton = { TextButton(onClick = { showExpiryPicker = false }) { Text("Cancel") } }
-        ) {
-            DatePicker(
-                state = pickerState,
-                showModeToggle = false,
-                modifier = Modifier.fillMaxWidth()
+        if (showExpiryPicker) {
+            val pickerState = rememberDatePickerState(initialSelectedDateMillis = expiryDateMillis)
+            DatePickerDialog(
+                onDismissRequest = { showExpiryPicker = false },
+                confirmButton = {
+                    TextButton(onClick = {
+                        expiryDateMillis = pickerState.selectedDateMillis
+                        showExpiryPicker = false
+                    }) { Text("Set") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showExpiryPicker = false
+                    }) { Text("Cancel") }
+                }
+            ) {
+                DatePicker(
+                    state = pickerState,
+                    showModeToggle = false,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        if (showAddVendorDialog) {
+            var addVendorPhoneError by remember { mutableStateOf(false) }
+            AlertDialog(
+                onDismissRequest = { showAddVendorDialog = false },
+                title = { Text("Add New Vendor", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            value = newVendorName,
+                            onValueChange = { newVendorName = it },
+                            label = { Text("Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = newVendorPhone,
+                            onValueChange = {
+                                newVendorPhone = InputFilters.digitsOnly(it, maxLen = 10)
+                            },
+                            label = { Text("Phone") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = KeyboardType.Phone
+                            )
+                        )
+                        if (addVendorPhoneError) {
+                            Text(
+                                text = "Mobile number must be 10 digits",
+                                color = LossRed,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        OutlinedTextField(
+                            value = newVendorGst,
+                            onValueChange = { newVendorGst = it },
+                            label = { Text("GST Number (optional)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                if (newVendorPhone.length != 10) {
+                                    addVendorPhoneError = true
+                                    return@launch
+                                }
+                                addVendorPhoneError = false
+                                val created =
+                                    onAddVendor(newVendorName, newVendorPhone, newVendorGst)
+                                if (created != null) {
+                                    selectedVendorId = created.id
+                                    vendorQuery = ""
+                                    showVendorDropdown = false
+                                }
+                                showAddVendorDialog = false
+                                newVendorName = ""
+                                newVendorPhone = ""
+                                newVendorGst = ""
+                            }
+                        }
+                    ) { Text("Add") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showAddVendorDialog = false
+                    }) { Text("Cancel") }
+                }
+            )
+        }
+
+        if (showAddCategoryDialog) {
+            AlertDialog(
+                onDismissRequest = { showAddCategoryDialog = false },
+                title = { Text("Add New Category", fontWeight = FontWeight.Bold) },
+                text = {
+                    OutlinedTextField(
+                        value = newCategory,
+                        onValueChange = { newCategory = it },
+                        label = { Text("Category name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val c = newCategory.trim()
+                            if (c.isNotBlank()) category = c
+                            newCategory = ""
+                            showAddCategoryDialog = false
+                        }
+                    ) { Text("Add") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showAddCategoryDialog = false
+                    }) { Text("Cancel") }
+                }
             )
         }
     }
+}
 
-    if (showAddVendorDialog) {
-        var addVendorPhoneError by remember { mutableStateOf(false) }
-        AlertDialog(
-            onDismissRequest = { showAddVendorDialog = false },
-            title = { Text("Add New Vendor", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
-                        value = newVendorName,
-                        onValueChange = { newVendorName = it },
-                        label = { Text("Name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = newVendorPhone,
-                        onValueChange = { newVendorPhone = InputFilters.digitsOnly(it, maxLen = 10) },
-                        label = { Text("Phone") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Phone)
-                    )
-                    if (addVendorPhoneError) {
-                        Text(
-                            text = "Mobile number must be 10 digits",
-                            color = LossRed,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    OutlinedTextField(
-                        value = newVendorGst,
-                        onValueChange = { newVendorGst = it },
-                        label = { Text("GST Number (optional)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        scope.launch {
-                            if (newVendorPhone.length != 10) {
-                                addVendorPhoneError = true
-                                return@launch
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun StockAdjustmentDialog(
+    item: ItemEntity,
+    onDismiss: () -> Unit,
+    onAdjustStock: (Int) -> Unit,
+    onAddReceivedStock: (Int) -> Unit,
+    onSetStock: (Int) -> Unit,
+    onSetStockKg: (Double) -> Unit
+) {
+    val focusManager = LocalFocusManager.current
+    var addingQty by remember { mutableStateOf(false) }
+    var addStockValue by remember { mutableStateOf("") }
+    var editingStock by remember { mutableStateOf(false) }
+    var stockEditValue by remember { mutableStateOf(TextFieldValue()) }
+
+    val stockStep: Double = if (item.isLoose) 0.1 else 1.0
+    val controlSize = 36.dp
+    val controlShape = RoundedCornerShape(8.dp)
+
+    val currentStock = if (item.isLoose) item.stockKg else item.stock.toDouble()
+    val stockUnit = if (item.isLoose) "kg" else "pcs"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(
+                    text = "Adjust Stock",
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = item.name,
+                    fontSize = 14.sp,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Current stock display
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = BgPrimary),
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Current Stock",
+                                fontSize = 12.sp,
+                                color = TextSecondary
+                            )
+                            Text(
+                                text = if (item.isLoose) {
+                                    String.format("%.1f %s", currentStock, stockUnit)
+                                } else {
+                                    "${currentStock.toInt()} $stockUnit"
+                                },
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                        }
+
+                        // Quick adjust buttons
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Minus button
+                            Box(
+                                modifier = Modifier
+                                    .width(controlSize)
+                                    .height(controlSize)
+                                    .background(
+                                        color = LossRedBg,
+                                        shape = controlShape
+                                    )
+                                    .clickable {
+                                        if (item.isLoose) {
+                                            onSetStockKg(currentStock - stockStep)
+                                        } else {
+                                            onAdjustStock(-stockStep.toInt())
+                                        }
+                                    }
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    Text(
+                                        text = "-",
+                                        color = LossRed,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
-                            addVendorPhoneError = false
-                            val created = onAddVendor(newVendorName, newVendorPhone, newVendorGst)
-                            if (created != null) {
-                                selectedVendorId = created.id
-                                vendorQuery = ""
-                                showVendorDropdown = false
+
+                            // Plus button
+                            Box(
+                                modifier = Modifier
+                                    .width(controlSize)
+                                    .height(controlSize)
+                                    .background(
+                                        color = KiranaGreenBg,
+                                        shape = controlShape
+                                    )
+                                    .clickable {
+                                        if (item.isLoose) {
+                                            onSetStockKg(currentStock + stockStep)
+                                        } else {
+                                            onAdjustStock(stockStep.toInt())
+                                        }
+                                    }
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    Text(
+                                        text = "+",
+                                        color = ProfitGreen,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
-                            showAddVendorDialog = false
-                            newVendorName = ""
-                            newVendorPhone = ""
-                            newVendorGst = ""
                         }
                     }
-                ) { Text("Add") }
-            },
-            dismissButton = { TextButton(onClick = { showAddVendorDialog = false }) { Text("Cancel") } }
-        )
-    }
+                }
 
-    if (showAddCategoryDialog) {
-        AlertDialog(
-            onDismissRequest = { showAddCategoryDialog = false },
-            title = { Text("Add New Category", fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(
-                    value = newCategory,
-                    onValueChange = { newCategory = it },
-                    label = { Text("Category name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val c = newCategory.trim()
-                        if (c.isNotBlank()) category = c
-                        newCategory = ""
-                        showAddCategoryDialog = false
+                // Add received stock section
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = BgPrimary),
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Add Received Stock",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+
+                        if (addingQty) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = addStockValue,
+                                    onValueChange = { addStockValue = it },
+                                    placeholder = { Text("Qty") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = {
+                                        val qty = addStockValue.trim().toIntOrNull()
+                                        if (qty != null && qty > 0) {
+                                            onAddReceivedStock(qty)
+                                            addStockValue = ""
+                                            addingQty = false
+                                            focusManager.clearFocus()
+                                        }
+                                    }
+                                ) {
+                                    Text("Add")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        addStockValue = ""
+                                        addingQty = false
+                                        focusManager.clearFocus()
+                                    }
+                                ) {
+                                    Text("Cancel")
+                                }
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { addingQty = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Add Quantity")
+                            }
+                        }
                     }
-                ) { Text("Add") }
-            },
-            dismissButton = { TextButton(onClick = { showAddCategoryDialog = false }) { Text("Cancel") } }
-        )
-    }
-}
+                }
+
+                // Set exact stock section
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = BgPrimary),
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Set Exact Stock",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+
+                        if (editingStock) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = stockEditValue,
+                                    onValueChange = { stockEditValue = it },
+                                    placeholder = { Text("Stock") },
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = if (item.isLoose) KeyboardType.Decimal else KeyboardType.Number
+                                    ),
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = {
+                                        val raw = stockEditValue.text.trim()
+                                        if (item.isLoose) {
+                                            val v = raw.toDoubleOrNull()
+                                            if (v != null) onSetStockKg(v)
+                                        } else {
+                                            val v = raw.toIntOrNull()
+                                            if (v != null) onSetStock(v)
+                                        }
+                                        editingStock = false
+                                        focusManager.clearFocus()
+                                    }
+                                ) {
+                                    Text("Set")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        editingStock = false
+                                        focusManager.clearFocus()
+                                    }
+                                ) {
+                                    Text("Cancel")
+                                }
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    editingStock = true
+                                    stockEditValue = TextFieldValue(
+                                        text = if (item.isLoose) {
+                                            String.format("%.1f", currentStock)
+                                        } else {
+                                            currentStock.toInt().toString()
+                                        }
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Set Stock Level")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", fontWeight = FontWeight.Bold)
+            }
+        },
+        containerColor = BgPrimary,
+        shape = RoundedCornerShape(16.dp)
+    )
 }
 

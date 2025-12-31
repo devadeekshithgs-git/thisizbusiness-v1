@@ -336,3 +336,18 @@ interface OutboxDao {
     @Query("DELETE FROM outbox")
     suspend fun clearAll()
 }
+
+@Dao
+interface BillingSessionDao {
+    @Query("SELECT * FROM billing_sessions WHERE status != 'CHECKED_OUT' ORDER BY createdAt DESC")
+    fun observeActiveSessions(): Flow<List<BillingSessionEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(session: BillingSessionEntity)
+
+    @Query("DELETE FROM billing_sessions WHERE sessionId = :sessionId")
+    suspend fun deleteById(sessionId: String)
+
+    @Query("DELETE FROM billing_sessions WHERE status = 'CHECKED_OUT'")
+    suspend fun clearCheckedOut()
+}
