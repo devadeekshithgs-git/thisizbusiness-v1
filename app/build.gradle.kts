@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
+    id("com.google.gms.google-services")
 }
 
 // Note: Avoid overriding buildDir on Windows. It can sometimes make file-lock issues worse
@@ -12,7 +13,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.kiranaflow.app"
+        applicationId = "com.thisizbusiness.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -104,6 +105,11 @@ dependencies {
     
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+
+    // Firebase
+    implementation(platform("com.google.firebase:firebase-bom:34.7.0"))
+    implementation("com.google.firebase:firebase-auth")
 
     // Networking (real backend wiring)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
@@ -116,6 +122,8 @@ dependencies {
 
     // DataStore (Shop Settings persistence)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // CameraX
     val cameraXVersion = "1.3.1"
@@ -159,7 +167,6 @@ dependencies {
 
     // Supabase Android SDK for Direct Integration
     // Using a simpler approach with HTTP client for now
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 

@@ -1,18 +1,13 @@
 package com.kiranaflow.app.billing.send
 
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
-import androidx.core.content.FileProvider
 import com.kiranaflow.app.billing.model.BillSnapshot
-import com.kiranaflow.app.billing.render.BillBitmapRenderer
-import com.kiranaflow.app.billing.render.BillTextFormatter
+import com.kiranaflow.app.util.ReceiptPdfRenderer
 import com.kiranaflow.app.utils.PhoneFormatter
 import java.io.File
-import java.io.FileOutputStream
 
 object WhatsAppShareManager {
     
@@ -41,14 +36,12 @@ object WhatsAppShareManager {
             
             Log.d("WhatsAppShare", "Normalized phone: '$normalizedPhone'")
             
-            // Generate bill image
-            val bitmap = BillBitmapRenderer.renderToBitmap(bill)
-            
-            // Save bitmap to cache
-            val imageUri = saveBitmapToCache(context, bitmap, "bill_${bill.transactionInfo.billNo}.png")
-            
-            // Generate caption text
-            val caption = BillTextFormatter.formatWhatsAppCaption(bill)
+            // Generate a professional PDF bill.
+            val pdfUri = ReceiptPdfRenderer.renderBillSnapshotToPdfUri(
+                context = context,
+                bill = bill,
+                fileName = "bill_${bill.transactionInfo.billNo}.pdf"
+            )
             
             // Check if WhatsApp is installed first
             val whatsappPackage = getAvailableWhatsAppPackage(context)
@@ -57,27 +50,15 @@ object WhatsAppShareManager {
                 return WhatsAppShareResult.Error("WhatsApp is not installed. Please install WhatsApp to share bills directly.")
             }
             
-            // Try multiple approaches to open WhatsApp directly
-            val attempts = listOf(
-                { openWhatsAppWithJid(context, normalizedPhone, imageUri, caption, whatsappPackage) },
-                { openWhatsAppWithUrl(context, normalizedPhone, imageUri, caption, whatsappPackage) },
-                { openWhatsAppWithShareIntent(context, normalizedPhone, imageUri, caption, whatsappPackage) }
+            // Send PDF directly to the customer's DM (no caption, no chooser).
+            openWhatsAppWithJid(
+                context = context,
+                normalizedPhone = normalizedPhone,
+                pdfUri = pdfUri,
+                whatsappPackage = whatsappPackage
             )
-            
-            for (attempt in attempts) {
-                try {
-                    attempt()
-                    Log.d("WhatsAppShare", "Successfully opened WhatsApp for $normalizedPhone")
-                    return WhatsAppShareResult.Success
-                } catch (e: Exception) {
-                    Log.w("WhatsAppShare", "Attempt failed, trying next approach", e)
-                    continue
-                }
-            }
-            
-            // If all attempts failed, return error instead of fallback
-            Log.e("WhatsAppShare", "All WhatsApp attempts failed")
-            WhatsAppShareResult.Error("Failed to open WhatsApp. Please ensure WhatsApp is updated and try again.")
+            Log.d("WhatsAppShare", "Successfully opened WhatsApp DM for $normalizedPhone")
+            WhatsAppShareResult.Success
             
         } catch (e: Exception) {
             Log.e("WhatsAppShare", "Failed to send bill via WhatsApp", e)
@@ -120,8 +101,7 @@ object WhatsAppShareManager {
     private fun openWhatsAppWithJid(
         context: Context,
         normalizedPhone: String,
-        imageUri: Uri,
-        caption: String,
+        pdfUri: Uri,
         whatsappPackage: String
     ) {
         val phoneDigits = normalizedPhone.substring(1) // Remove '+' for JID
@@ -130,9 +110,8 @@ object WhatsAppShareManager {
         Log.d("WhatsAppShare", "Opening WhatsApp with JID: $jid using package: $whatsappPackage")
         
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "image/png"
-            putExtra(Intent.EXTRA_STREAM, imageUri)
-            putExtra(Intent.EXTRA_TEXT, caption)
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, pdfUri)
             putExtra("jid", jid)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             setPackage(whatsappPackage)
@@ -143,81 +122,6 @@ object WhatsAppShareManager {
         }
         
         context.startActivity(intent)
-    }
-    
-    /**
-     * Opens WhatsApp using URL scheme (alternative approach)
-     */
-    private fun openWhatsAppWithUrl(
-        context: Context,
-        normalizedPhone: String,
-        imageUri: Uri,
-        caption: String,
-        whatsappPackage: String
-    ) {
-        val phoneDigits = normalizedPhone.substring(1) // Remove '+'
-        
-        Log.d("WhatsAppShare", "Opening WhatsApp with URL: wa.me/$phoneDigits using package: $whatsappPackage")
-        
-        // First open the chat, then share
-        val chatIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phoneDigits"))
-        chatIntent.setPackage(whatsappPackage)
-        
-        if (chatIntent.resolveActivity(context.packageManager) == null) {
-            throw Exception("URL intent cannot be resolved")
-        }
-        
-        context.startActivity(chatIntent)
-    }
-    
-    /**
-     * Opens WhatsApp using generic share intent (last resort)
-     */
-    private fun openWhatsAppWithShareIntent(
-        context: Context,
-        normalizedPhone: String,
-        imageUri: Uri,
-        caption: String,
-        whatsappPackage: String
-    ) {
-        Log.d("WhatsAppShare", "Opening WhatsApp with share intent using package: $whatsappPackage")
-        
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "image/png"
-            putExtra(Intent.EXTRA_STREAM, imageUri)
-            putExtra(Intent.EXTRA_TEXT, caption)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            setPackage(whatsappPackage)
-        }
-        
-        if (intent.resolveActivity(context.packageManager) == null) {
-            throw Exception("Share intent cannot be resolved")
-        }
-        
-        context.startActivity(intent)
-    }
-    
-        
-    /**
-     * Saves bitmap to app cache directory for sharing
-     */
-    private fun saveBitmapToCache(context: Context, bitmap: Bitmap, fileName: String): Uri {
-        val cacheDir = File(context.cacheDir, DIGITAL_BILLS_DIR)
-        cacheDir.mkdirs()
-        
-        val imageFile = File(cacheDir, fileName)
-        
-        FileOutputStream(imageFile).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-        }
-        
-        Log.d("WhatsAppShare", "Saved bill image to: ${imageFile.absolutePath}")
-        
-        return FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            imageFile
-        )
     }
     
     /**
@@ -276,7 +180,6 @@ object WhatsAppShareManager {
 sealed class WhatsAppShareResult {
     object Success : WhatsAppShareResult()
     data class Error(val message: String) : WhatsAppShareResult()
-    object FallbackToChooser : WhatsAppShareResult()
 }
 
 sealed class ValidationResult {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.runtime.getValue
@@ -54,7 +55,14 @@ import com.kiranaflow.app.ui.screens.vendors.TotalPayablesScreen
 import com.kiranaflow.app.ui.screens.vendors.VendorDetailScreen
 import com.kiranaflow.app.ui.screens.vendors.VendorsScreen 
 import com.kiranaflow.app.ui.screens.reports.ReportsScreen
-import com.kiranaflow.app.ui.screens.reports.ReportDetailScreen
+import com.kiranaflow.app.ui.screens.reports.ReportHostScreen
+import com.kiranaflow.app.ui.screens.auth.AuthRoutes
+import com.kiranaflow.app.ui.screens.auth.AuthViewModel
+import com.kiranaflow.app.ui.screens.auth.LoginPhoneOtpSingleScreen
+import com.kiranaflow.app.ui.screens.auth.SignupCreatePasswordScreen
+import com.kiranaflow.app.ui.screens.auth.SignupOtpScreen
+import com.kiranaflow.app.ui.screens.auth.SignupPhoneScreen
+import com.kiranaflow.app.ui.screens.auth.UnlockScreen
 import com.kiranaflow.app.ui.theme.KiranaTheme
 import com.kiranaflow.app.util.DebugLogger
 import com.kiranaflow.app.util.ConnectivityMonitor
@@ -190,6 +198,8 @@ fun KiranaApp() {
     DebugLogger.log("MainActivity.kt:94", "Before billingViewModel creation", mapOf(), "H3")
     // #endregion
     val billingViewModel: BillingViewModel = viewModel()
+
+    val authViewModel: AuthViewModel = viewModel()
     // #region agent log
     DebugLogger.log("MainActivity.kt:97", "After billingViewModel creation", mapOf(), "H3")
     // #endregion
@@ -198,11 +208,14 @@ fun KiranaApp() {
     var quickAction by rememberSaveable { mutableStateOf<String?>(null) }
 
     val mainTabs = remember { listOf("home", "customers", "bill", "inventory", "vendors") }
+    val mainStartRoute = "bill"
+
+    val isAuthRoute = currentRoute?.startsWith("auth/") == true
 
     fun navigateToTab(tab: String) {
         if (currentTab != tab) {
             navController.navigate(tab) {
-                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                popUpTo(mainStartRoute) { saveState = true }
                 launchSingleTop = true
                 restoreState = true
             }
@@ -231,20 +244,22 @@ fun KiranaApp() {
     Scaffold(
         containerColor = Color.Transparent,
         bottomBar = {
-            KiranaBottomNav(
-                currentTab = currentTab,
-                onTabSelected = { tab ->
-                    // #region agent log
-                    Log.d("Nav", "Tab selected=$tab currentTab=$currentTab currentRoute=$currentRoute")
-                    // #endregion
-                    navigateToTab(tab)
-                },
-                onTabLongPress = { tab ->
-                    if (tab == "home") return@KiranaBottomNav
-                    quickAction = tab
-                    navigateToTab(tab)
-                }
-            )
+            if (!isAuthRoute) {
+                KiranaBottomNav(
+                    currentTab = currentTab,
+                    onTabSelected = { tab ->
+                        // #region agent log
+                        Log.d("Nav", "Tab selected=$tab currentTab=$currentTab currentRoute=$currentRoute")
+                        // #endregion
+                        navigateToTab(tab)
+                    },
+                    onTabLongPress = { tab ->
+                        if (tab == "home") return@KiranaBottomNav
+                        quickAction = tab
+                        navigateToTab(tab)
+                    }
+                )
+            }
         }
     ) { innerPadding ->
         val density = LocalDensity.current
@@ -320,13 +335,89 @@ fun KiranaApp() {
             Box(modifier = Modifier.padding(innerPadding)) {
             NavHost(
                 navController = navController,
-                startDestination = "bill",
+                startDestination = AuthRoutes.Gate,
                 modifier = Modifier, 
                 enterTransition = { fadeIn(animationSpec = tween(300)) },
                 exitTransition = { fadeOut(animationSpec = tween(300)) },
                 popEnterTransition = { fadeIn(animationSpec = tween(300)) },
                 popExitTransition = { fadeOut(animationSpec = tween(300)) }
             ) {
+                composable(AuthRoutes.Gate) {
+                    LaunchedEffect(Unit) {
+                        val target = when {
+                            !authViewModel.isFirebaseSignedIn() -> AuthRoutes.Login
+                            authViewModel.hasAppPassword() && !authViewModel.isUnlockedThisSession() -> AuthRoutes.Unlock
+                            authViewModel.hasAppPassword() && authViewModel.isUnlockedThisSession() -> mainStartRoute
+                            else -> AuthRoutes.SignupPassword
+                        }
+                        navController.navigate(target) {
+                            popUpTo(AuthRoutes.Gate) { inclusive = true }
+                        }
+                    }
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+
+                composable(AuthRoutes.Login) {
+                    LoginPhoneOtpSingleScreen(
+                        viewModel = authViewModel,
+                        onSuccess = {
+                            val target = if (authViewModel.hasAppPassword()) {
+                                if (authViewModel.isUnlockedThisSession()) mainStartRoute else AuthRoutes.Unlock
+                            } else {
+                                AuthRoutes.SignupPassword
+                            }
+                            navController.navigate(target) {
+                                popUpTo(AuthRoutes.Login) { inclusive = true }
+                            }
+                        },
+                        onSignup = { navController.navigate(AuthRoutes.SignupPhone) }
+                    )
+                }
+
+                composable(AuthRoutes.Unlock) {
+                    UnlockScreen(
+                        viewModel = authViewModel,
+                        onUnlocked = {
+                            navController.navigate(mainStartRoute) {
+                                popUpTo(AuthRoutes.Gate) { inclusive = true }
+                            }
+                        }
+                    )
+                }
+
+                composable(AuthRoutes.SignupPhone) {
+                    SignupPhoneScreen(
+                        viewModel = authViewModel,
+                        onOtpSent = { navController.navigate(AuthRoutes.SignupOtp) },
+                        onBackToLogin = {
+                            navController.navigate(AuthRoutes.Login) {
+                                popUpTo(AuthRoutes.SignupPhone) { inclusive = true }
+                            }
+                        }
+                    )
+                }
+
+                composable(AuthRoutes.SignupOtp) {
+                    SignupOtpScreen(
+                        viewModel = authViewModel,
+                        onVerified = { navController.navigate(AuthRoutes.SignupPassword) },
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+
+                composable(AuthRoutes.SignupPassword) {
+                    SignupCreatePasswordScreen(
+                        viewModel = authViewModel,
+                        onDone = {
+                            navController.navigate(mainStartRoute) {
+                                popUpTo(AuthRoutes.Gate) { inclusive = true }
+                            }
+                        }
+                    )
+                }
+
                 composable("home") { 
                     // #region agent log
                     DebugLogger.log("MainActivity.kt:134", "Navigating to home screen", mapOf(), "H4")
@@ -464,14 +555,16 @@ fun KiranaApp() {
                         onBackClick = { navController.popBackStack() },
                         onReportClick = { reportId -> 
                             val reportTitle = getReportTitle(reportId)
-                            navController.navigate("reports/$reportId?title=$reportTitle")
+                            val encodedTitle = android.net.Uri.encode(reportTitle)
+                            navController.navigate("reports/$reportId?title=$encodedTitle")
                         }
                     )
                 }
                 composable("reports/{reportId}?title={title}") { backStackEntry ->
                     val reportId = backStackEntry.arguments?.getString("reportId") ?: ""
-                    val title = backStackEntry.arguments?.getString("title") ?: "Report"
-                    ReportDetailScreen(
+                    val titleArg = backStackEntry.arguments?.getString("title") ?: "Report"
+                    val title = runCatching { android.net.Uri.decode(titleArg) }.getOrDefault(titleArg)
+                    ReportHostScreen(
                         reportId = reportId,
                         reportTitle = title,
                         onBackClick = { navController.popBackStack() }
@@ -480,10 +573,12 @@ fun KiranaApp() {
             }
             }
 
-            SettingsDrawer(
-                isOpen = showSettingsDrawer, 
-                onClose = { showSettingsDrawer = false }
-            )
+            if (!isAuthRoute) {
+                SettingsDrawer(
+                    isOpen = showSettingsDrawer, 
+                    onClose = { showSettingsDrawer = false }
+                )
+            }
         }
     }
 }
@@ -497,13 +592,13 @@ fun getReportTitle(reportId: String): String {
         "payable_due" -> "Payable - Due List"
         "purchase_report" -> "Purchase Report"
         "cashbook_reports" -> "Cashbook Reports"
-        "customer_transactions" -> "Customer Transactions Report"
+        "customer_transactions" -> "Customer Transaction report"
         "customer_list" -> "Customer List"
         "sales_report_bills" -> "Sales Report"
-        "sales_daywise" -> "Sales Day-wise Report"
-        "stocks_summary" -> "Stocks Summary Report"
+        "sales_daywise" -> "Sales Day-wise Reports"
+        "stocks_summary" -> "Stocks Summary"
         "supplier_transactions" -> "Supplier Transaction Report"
-        "supplier_list" -> "Supplier/Vendor List"
+        "supplier_list" -> "Supplier List"
         else -> "Report"
     }
 }

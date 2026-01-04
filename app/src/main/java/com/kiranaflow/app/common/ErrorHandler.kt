@@ -24,12 +24,6 @@ object ErrorHandler {
                 Log.d(TAG, "Bill shared successfully via WhatsApp")
             }
             
-            is WhatsAppShareResult.FallbackToChooser -> {
-                // Fallback to chooser - let user choose app
-                Log.d(TAG, "Fallback to app chooser for sharing")
-                // No error message needed as this is expected behavior
-            }
-            
             is WhatsAppShareResult.Error -> {
                 val userMessage = when {
                     result.message.contains("phone", ignoreCase = true) -> 
