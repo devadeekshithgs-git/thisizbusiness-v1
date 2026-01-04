@@ -12,6 +12,8 @@ dependencyResolutionManagement {
         mavenCentral()
         // Needed for dependencies published under com.github.* (e.g., uCrop).
         maven { url = uri("https://jitpack.io") }
+        // Supabase repository
+        maven { url = uri("https://repo1.maven.org/maven2/") }
     }
 }
 

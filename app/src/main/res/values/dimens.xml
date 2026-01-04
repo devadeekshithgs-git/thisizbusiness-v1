@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Swipe to Checkout Button Dimensions -->
+    <dimen name="checkout_swipe_height">56dp</dimen>
+    <dimen name="checkout_horizontal_margin">16dp</dimen>
+    <dimen name="checkout_swipe_thumb_size">48dp</dimen>
+    <dimen name="checkout_swipe_corner_radius">28dp</dimen>
+    <dimen name="checkout_swipe_animation_duration_ms">300</dimen>
+    <dimen name="checkout_swipe_reset_delay_ms">2000</dimen>
+</resources>

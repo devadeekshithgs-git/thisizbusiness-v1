@@ -2,6 +2,14 @@
 <resources>
     <style name="Theme.thisizbusiness" parent="android:Theme.Material.Light.NoActionBar" />
 
+    <!-- Splash screen theme -->
+    <style name="Theme.Splash" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#1E983B</item>
+        <item name="android:statusBarColor">#1E983B</item>
+        <item name="android:navigationBarColor">#1E983B</item>
+        <item name="android:windowFullscreen">false</item>
+    </style>
+
     <!-- UCrop activity theme (requires AppCompat) -->
     <style name="Theme.UCrop" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">#1B5E20</item>

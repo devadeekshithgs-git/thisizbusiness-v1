@@ -175,8 +175,16 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
         .map { list -> list.associateBy { it.id } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
     val searchResults: StateFlow<List<ItemEntity>> = combine(_items, _searchQuery) { items, query ->
-        if (query.isEmpty()) emptyList()
-        else items.filter { it.name.contains(query, ignoreCase = true) }
+        Log.d("BillingViewModel", "Search called with query: '$query', items count: ${items.size}")
+        val results = if (query.isEmpty()) {
+            Log.d("BillingViewModel", "Query is empty, returning empty list")
+            emptyList()
+        } else {
+            val filtered = items.filter { it.name.contains(query, ignoreCase = true) }
+            Log.d("BillingViewModel", "Filtered results count: ${filtered.size}")
+            filtered
+        }
+        results
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     
     // Keep searchResults as alias, add searchItems
@@ -234,10 +242,12 @@ class BillingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun onSearchChange(query: String) {
+        Log.d("BillingViewModel", "onSearchChange called with: '$query'")
         _searchQuery.value = query
     }
     
     fun searchItems(query: String) {
+        Log.d("BillingViewModel", "searchItems called with: '$query'")
         _searchQuery.value = query
     }
 

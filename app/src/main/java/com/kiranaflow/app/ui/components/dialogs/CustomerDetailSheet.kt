@@ -29,6 +29,7 @@ import com.kiranaflow.app.data.local.TransactionEntity
 import com.kiranaflow.app.data.local.TransactionItemEntity
 import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaInput
+import com.kiranaflow.app.ui.components.SearchField
 import com.kiranaflow.app.ui.theme.*
 import com.kiranaflow.app.util.InputFilters
 import androidx.compose.ui.text.input.KeyboardType
@@ -227,18 +228,18 @@ fun CustomerDetailSheet(
                         .fillMaxWidth()
                         .padding(horizontal = 8.dp)
                 ) {
-                    KiranaInput(
-                        value = txSearchQuery,
-                        onValueChange = { txSearchQuery = it },
+                    SearchField(
+                        query = txSearchQuery,
+                        onQueryChange = { txSearchQuery = it },
                         placeholder = "Search transactions...",
-                        label = "SEARCH"
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(10.dp))
-                    KiranaInput(
-                        value = productQuery,
-                        onValueChange = { productQuery = it },
+                    SearchField(
+                        query = productQuery,
+                        onQueryChange = { productQuery = it },
                         placeholder = "Filter by product bought (e.g. Sugar)",
-                        label = "PRODUCT"
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(10.dp))
 

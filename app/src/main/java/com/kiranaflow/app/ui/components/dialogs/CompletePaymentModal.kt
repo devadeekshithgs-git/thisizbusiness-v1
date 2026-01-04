@@ -1,11 +1,14 @@
 package com.kiranaflow.app.ui.components.dialogs
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -65,6 +68,7 @@ fun CompletePaymentModal(
     var newCustomerName by remember { mutableStateOf("") }
     var newCustomerPhone by remember { mutableStateOf("") }
     var addCustomerPhoneError by remember { mutableStateOf(false) }
+    var customerSearchQuery by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -77,6 +81,17 @@ fun CompletePaymentModal(
     LaunchedEffect(selectedCustomerId, customers) {
         if (selectedCustomer == null && selectedCustomerId != null) {
             selectedCustomer = customers.firstOrNull { it.id == selectedCustomerId }
+        }
+    }
+
+    // Filter customers based on search query
+    val filteredCustomers = remember(customers, customerSearchQuery) {
+        if (customerSearchQuery.isBlank()) {
+            customers
+        } else {
+            customers.filter { customer ->
+                customer.name.contains(customerSearchQuery, ignoreCase = true)
+            }
         }
     }
 
@@ -190,7 +205,7 @@ fun CompletePaymentModal(
                         isSelected = selectedPaymentMethod == "CASH",
                         onClick = { selectedPaymentMethod = "CASH" },
                         modifier = Modifier.weight(1f),
-                        backgroundColor = if (selectedPaymentMethod == "CASH") ProfitGreen else BgCard
+                        backgroundColor = if (selectedPaymentMethod == "CASH") Black else BgCard
                     )
                     
                     // UPI
@@ -200,7 +215,7 @@ fun CompletePaymentModal(
                         isSelected = selectedPaymentMethod == "UPI",
                         onClick = { selectedPaymentMethod = "UPI" },
                         modifier = Modifier.weight(1f),
-                        backgroundColor = if (selectedPaymentMethod == "UPI") ProfitGreen else BgCard
+                        backgroundColor = if (selectedPaymentMethod == "UPI") Black else BgCard
                     )
                     
                     // Credit
@@ -210,7 +225,7 @@ fun CompletePaymentModal(
                         isSelected = selectedPaymentMethod == "CREDIT",
                         onClick = { selectedPaymentMethod = "CREDIT" },
                         modifier = Modifier.weight(1f),
-                        backgroundColor = if (selectedPaymentMethod == "CREDIT") ProfitGreen else BgCard
+                        backgroundColor = if (selectedPaymentMethod == "CREDIT") Black else BgCard
                     )
                 }
 
@@ -227,46 +242,72 @@ fun CompletePaymentModal(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 
-                // Customer Dropdown
-                ExposedDropdownMenuBox(
-                    expanded = showCustomerDropdown,
-                    onExpandedChange = { showCustomerDropdown = !showCustomerDropdown }
-                ) {
-                    OutlinedTextField(
-                        value = selectedCustomer?.name ?: "",
-                        onValueChange = { },
-                        readOnly = true,
-                        label = { Text("Select Customer...") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showCustomerDropdown) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = showCustomerDropdown,
-                        onDismissRequest = { showCustomerDropdown = false }
+                // Customer Selection with Search
+                OutlinedTextField(
+                    value = if (showCustomerDropdown) customerSearchQuery else (selectedCustomer?.name ?: ""),
+                    onValueChange = { 
+                        if (!showCustomerDropdown) {
+                            showCustomerDropdown = true
+                        }
+                        customerSearchQuery = it
+                    },
+                    label = { Text("Select Customer...") },
+                    trailingIcon = { 
+                        IconButton(onClick = { showCustomerDropdown = !showCustomerDropdown }) {
+                            Icon(
+                                if (showCustomerDropdown) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Dropdown"
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                
+                if (showCustomerDropdown) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = BgCard),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                     ) {
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                        ) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            showCustomerDropdown = false
+                                            showAddCustomerDialog = true
+                                            customerSearchQuery = ""
+                                        }
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Icon(Icons.Default.Add, contentDescription = null, tint = Blue600)
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text("Add new customer", color = Blue600, fontWeight = FontWeight.Bold)
                                 }
-                            },
-                            onClick = {
-                                showCustomerDropdown = false
-                                showAddCustomerDialog = true
                             }
-                        )
-                        customers.forEach { customer ->
-                            DropdownMenuItem(
-                                text = { Text(customer.name) },
-                                onClick = {
-                                    selectedCustomer = customer
-                                    showCustomerDropdown = false
+                            items(filteredCustomers) { customer ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            selectedCustomer = customer
+                                            showCustomerDropdown = false
+                                            customerSearchQuery = ""
+                                        }
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(customer.name)
                                 }
-                            )
+                            }
                         }
                     }
                 }
@@ -345,7 +386,7 @@ fun CompletePaymentModal(
                     },
                     icon = Icons.Default.Check,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = ProfitGreen,
+                        containerColor = Black,
                         contentColor = BgPrimary
                     )
                 )

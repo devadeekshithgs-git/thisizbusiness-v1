@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Swipe to Checkout Button Colors -->
+    <color name="checkout_swipe_background">#E0E0E0</color>
+    <color name="checkout_swipe_track">#F5F5F5</color>
+    <color name="checkout_swipe_thumb">#4CAF50</color>
+    <color name="checkout_swipe_thumb_disabled">#9E9E9E</color>
+    <color name="checkout_swipe_success">#4CAF50</color>
+    <color name="checkout_swipe_error">#F44336</color>
+    <color name="checkout_swipe_loading">#2196F3</color>
+    <color name="checkout_swipe_text_primary">#212121</color>
+    <color name="checkout_swipe_text_secondary">#757575</color>
+</resources>

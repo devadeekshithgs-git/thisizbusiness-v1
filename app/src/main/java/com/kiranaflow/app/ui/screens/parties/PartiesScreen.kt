@@ -471,13 +471,14 @@ fun PartiesScreen(
                     }
 
                     item {
-                        KiranaInput(
-                            value = searchQuery,
-                            onValueChange = viewModel::setSearchQuery,
-                            placeholder = "Search customers...",
-                            icon = Icons.Default.Search,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
-                        )
+                        Box(modifier = Modifier.padding(horizontal = 24.dp)) {
+                            SearchField(
+                                query = searchQuery,
+                                onQueryChange = viewModel::setSearchQuery,
+                                placeholder = "Search customers...",
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
 
                     item {
@@ -575,13 +576,14 @@ fun PartiesScreen(
                     }
 
                     item {
-                        KiranaInput(
-                            value = searchQuery,
-                            onValueChange = viewModel::setSearchQuery,
-                            placeholder = "Search vendors...",
-                            icon = Icons.Default.Search,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
-                        )
+                        Box(modifier = Modifier.padding(horizontal = 24.dp)) {
+                            SearchField(
+                                query = searchQuery,
+                                onQueryChange = viewModel::setSearchQuery,
+                                placeholder = "Search vendors...",
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
 
                     // Bulk selection controls

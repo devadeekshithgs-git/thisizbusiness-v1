@@ -8,11 +8,17 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE isDeleted = 0 ORDER BY name ASC")
     fun getAllItems(): Flow<List<ItemEntity>>
 
+    @Query("SELECT * FROM items WHERE isDeleted = 0 ORDER BY name ASC")
+    suspend fun getAllItemsSync(): List<ItemEntity>
+
     @Query("SELECT * FROM items WHERE barcode = :barcode AND isDeleted = 0 LIMIT 1")
     suspend fun getItemByBarcode(barcode: String): ItemEntity?
 
     @Query("SELECT * FROM items WHERE id = :id LIMIT 1")
     suspend fun getItemById(id: Int): ItemEntity?
+
+    @Query("SELECT * FROM items WHERE id = :id AND isDeleted = 0 LIMIT 1")
+    fun getItemByIdFlow(id: Int): Flow<ItemEntity?>
 
     @Query("SELECT * FROM items WHERE LOWER(name) = LOWER(:name) AND isDeleted = 0 LIMIT 1")
     suspend fun getItemByName(name: String): ItemEntity?
@@ -43,6 +49,12 @@ interface ItemDao {
     @Query("UPDATE items SET stockKg = stockKg + :qtyKg WHERE id = :itemId")
     suspend fun increaseStockKg(itemId: Int, qtyKg: Double)
 
+    @Query("SELECT * FROM items WHERE LOWER(name) LIKE '%' || :query || '%' AND isDeleted = 0 ORDER BY name ASC")
+    fun searchItems(query: String): Flow<List<ItemEntity>>
+
+    @Query("SELECT * FROM items WHERE stock <= reorderPoint AND isDeleted = 0 ORDER BY name ASC")
+    fun getLowStockItems(): Flow<List<ItemEntity>>
+
     /**
      * Safe (non-negative) stock deduction.
      * Returns number of rows affected (0 => insufficient stock or missing item).
@@ -68,6 +80,12 @@ interface PartyDao {
     
     @Query("SELECT * FROM parties ORDER BY name ASC")
     fun getAllParties(): Flow<List<PartyEntity>>
+
+    @Query("SELECT * FROM parties ORDER BY name ASC")
+    suspend fun getAllPartiesSync(): List<PartyEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertParty(party: PartyEntity): Long
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertParty(party: PartyEntity): Long
@@ -97,6 +115,12 @@ interface PartyDao {
 interface TransactionDao {
     @Query("SELECT * FROM transactions ORDER BY date DESC")
     fun getAllTransactions(): Flow<List<TransactionEntity>>
+
+    @Query("SELECT * FROM transactions ORDER BY date DESC")
+    suspend fun getAllTransactionsSync(): List<TransactionEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertTransaction(transaction: TransactionEntity): Long
 
     /**
      * Flat, join-based rows for GST exports. One row per line item.
@@ -195,6 +219,9 @@ interface TransactionDao {
     @Query("SELECT * FROM transaction_items WHERE transactionId = :transactionId")
     fun getItemsForTransaction(transactionId: Int): Flow<List<TransactionItemEntity>>
 
+    @Query("SELECT * FROM transaction_items WHERE transactionId = :transactionId")
+    suspend fun getTransactionItemsSync(transactionId: Int): List<TransactionItemEntity>
+
     @Query(
         """
         UPDATE transaction_items
@@ -245,6 +272,9 @@ interface TransactionDao {
 interface ReminderDao {
     @Query("SELECT * FROM reminders WHERE isDone = 0 ORDER BY dueAt ASC")
     fun getActiveReminders(): Flow<List<ReminderEntity>>
+
+    @Query("SELECT * FROM reminders ORDER BY dueAt ASC")
+    suspend fun getAllRemindersSync(): List<ReminderEntity>
 
     /**
      * Get all reminders that are either:

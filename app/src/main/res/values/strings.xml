@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">thisizbusiness</string>
+    
+    <!-- Swipe to Checkout Button Strings -->
+    <string name="checkout_swipe_label">CONFIRM ORDER</string>
+    <string name="checkout_swipe_instruction">Swipe to confirm &gt;</string>
+    <string name="checkout_swipe_success">Order Confirmed!</string>
+    <string name="checkout_swipe_error">Order Failed</string>
+    <string name="checkout_swipe_retry">Retry</string>
+    <string name="checkout_processing">Processing...</string>
 </resources>
 
 

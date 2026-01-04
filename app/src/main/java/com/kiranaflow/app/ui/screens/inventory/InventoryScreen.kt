@@ -24,11 +24,14 @@ import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -40,6 +43,7 @@ import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -102,6 +106,8 @@ fun InventoryScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val repo = remember(context) { KiranaRepository(KiranaDatabase.getDatabase(context)) }
+    val database = remember(context) { KiranaDatabase.getDatabase(context) }
+    val itemDao = database.itemDao()
     val billScanViewModel: BillScanViewModel = viewModel()
     val categoryHsnStore = remember(context) { CategoryHsnStore(context) }
     val categoryHsnDefaults by categoryHsnStore.defaults.collectAsState(initial = emptyMap())
@@ -123,6 +129,7 @@ fun InventoryScreen(
 
     var saveEventToConfirm by remember { mutableStateOf<InventoryViewModel.ItemSaveEvent.Success?>(null) }
     var saveErrorMessage by remember { mutableStateOf<String?>(null) }
+    var isCreatingFromBarcode by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.itemSaveEvents.collect { ev ->
@@ -135,6 +142,17 @@ fun InventoryScreen(
                     // Clear prefill_name so it doesn't retrigger
                     navController.currentBackStackEntry?.savedStateHandle?.remove<String>("prefill_name")
                     editingItem = null
+                    
+                    // If this was triggered by barcode scanning, show stock adjustment dialog
+                    if (isCreatingFromBarcode) {
+                        // Find the newly created item by barcode and show adjustment dialog
+                        val createdItem = itemDao.getItemByBarcode(viewModel.scannedBarcode.value!!)
+                        if (createdItem != null) {
+                            scannedItemForStockAdjustment = createdItem
+                            showStockAdjustmentDialog = true
+                        }
+                        isCreatingFromBarcode = false
+                    }
                 }
                 is InventoryViewModel.ItemSaveEvent.Failure -> {
                     saveErrorMessage = ev.message
@@ -160,6 +178,7 @@ fun InventoryScreen(
             ?.getLiveData<String>("prefill_name")
             ?.observeAsState()
             ?.value
+    Log.d("InventoryScreen", "prefillProductName received: '$prefillProductName'")
     val scannedItem by viewModel.scannedItem.collectAsState()
     val offProduct by viewModel.offProduct.collectAsState()
     val offLoading by viewModel.offLoading.collectAsState()
@@ -239,16 +258,41 @@ fun InventoryScreen(
     LaunchedEffect(scannedBarcodeValue) {
         if (!scannedBarcodeValue.isNullOrBlank()) {
             viewModel.onBarcodeScanned(scannedBarcodeValue)
-            // Check if we found an existing item
+            // Always show stock adjustment dialog for barcode scanning
+            // For new items, we'll create them first then show adjustment
+            showAddModal = false // Ensure add modal is closed
+            
+            // Wait for the search to complete, then check if we have an existing item
+            // Use a small delay to ensure the search has time to complete
+            delay(100) // Small delay to allow async search to complete
             val existingScannedItem = viewModel.scannedItem.value
             if (existingScannedItem != null) {
-                // Show stock adjustment dialog for existing items
                 scannedItemForStockAdjustment = existingScannedItem
                 showStockAdjustmentDialog = true
             } else {
-                // Re-open the Add Item dialog for new items
-                showAddModal = true
+                // For new items, create a basic item with the barcode and then show adjustment
+                val offProduct = viewModel.offProduct.value
+                val newItemName = offProduct?.name ?: "Scanned Item"
+                
+                isCreatingFromBarcode = true
+                viewModel.saveItem(
+                    name = newItemName,
+                    category = offProduct?.categories ?: "General",
+                    cost = 0.0,
+                    sell = 0.0,
+                    stock = 0,
+                    location = null,
+                    barcode = scannedBarcodeValue,
+                    gst = null,
+                    hsnCode = null,
+                    reorder = 10,
+                    imageUri = null
+                )
+                
+                // Wait for the item to be created, then show adjustment dialog
+                // The item save event will trigger the dialog to open
             }
+            
             // Consume the barcode so it doesn't retrigger on recomposition.
             navController.currentBackStackEntry?.savedStateHandle?.set("barcode", null)
         }
@@ -256,7 +300,9 @@ fun InventoryScreen(
 
     // Open add modal when prefill_name is set (from billing search "Add as new product")
     LaunchedEffect(prefillProductName) {
+        Log.d("InventoryScreen", "LaunchedEffect triggered with prefillProductName: '$prefillProductName'")
         if (!prefillProductName.isNullOrBlank()) {
+            Log.d("InventoryScreen", "Setting showAddModal to true for prefill: '$prefillProductName'")
             editingItem = null
             showAddModal = true
         }
@@ -365,7 +411,7 @@ fun InventoryScreen(
                                     onClick = { showBillScanner = true },
                                     enabled = !importBusy
                                 ) {
-                                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = TextSecondary)
+                                    Icon(Icons.Default.AddCircle, contentDescription = null, tint = TextSecondary)
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Add Inventory", fontWeight = FontWeight.Bold, color = TextSecondary)
                                 }
@@ -612,40 +658,31 @@ fun InventoryScreen(
 
     // Stock Adjustment Dialog for barcode scanned items
     scannedItemForStockAdjustment?.let { item ->
+        // Get real-time updates of the item to show current stock
+        val updatedItem by viewModel.getItemByIdFlow(item.id).collectAsState(initial = item)
+        
         StockAdjustmentDialog(
-            item = item,
+            item = updatedItem!!,
             onDismiss = {
                 showStockAdjustmentDialog = false
                 scannedItemForStockAdjustment = null
                 viewModel.clearScannedItem()
             },
             onAdjustStock = { delta: Int ->
-                viewModel.adjustStock(item, delta)
-                showStockAdjustmentDialog = false
-                scannedItemForStockAdjustment = null
-                viewModel.clearScannedItem()
-                Toast.makeText(context, "Stock adjusted for ${item.name}", Toast.LENGTH_SHORT).show()
+                viewModel.adjustStock(updatedItem!!, delta)
+                // Don't close dialog - allow continuous adjustments
             },
             onAddReceivedStock = { qty: Int ->
-                viewModel.addReceivedStock(item, qty)
-                showStockAdjustmentDialog = false
-                scannedItemForStockAdjustment = null
-                viewModel.clearScannedItem()
-                Toast.makeText(context, "Stock added for ${item.name}", Toast.LENGTH_SHORT).show()
+                viewModel.addReceivedStock(updatedItem!!, qty)
+                // Don't close dialog - allow continuous adjustments
             },
             onSetStock = { newStock: Int ->
-                viewModel.setStock(item, newStock)
-                showStockAdjustmentDialog = false
-                scannedItemForStockAdjustment = null
-                viewModel.clearScannedItem()
-                Toast.makeText(context, "Stock set for ${item.name}", Toast.LENGTH_SHORT).show()
+                viewModel.setStock(updatedItem!!, newStock)
+                // Don't close dialog - allow continuous adjustments
             },
             onSetStockKg = { newKg: Double ->
-                viewModel.setStockKg(item, newKg)
-                showStockAdjustmentDialog = false
-                scannedItemForStockAdjustment = null
-                viewModel.clearScannedItem()
-                Toast.makeText(context, "Stock set for ${item.name}", Toast.LENGTH_SHORT).show()
+                viewModel.setStockKg(updatedItem!!, newKg)
+                // Don't close dialog - allow continuous adjustments
             }
         )
     }
@@ -2029,169 +2066,170 @@ fun AddItemDialog(
                             )
                         }
                         Spacer(modifier = Modifier.height(12.dp))
-                        // Category dropdown (search + add new)
+                        // Category dropdown with inline search
                         Text("CATEGORY", style = MaterialTheme.typography.labelSmall)
                         Spacer(modifier = Modifier.height(6.dp))
-                        ExposedDropdownMenuBox(
-                            expanded = showCategoryDropdown,
-                            onExpandedChange = { showCategoryDropdown = !showCategoryDropdown }
-                        ) {
-                            OutlinedTextField(
-                                value = category,
-                                onValueChange = {},
-                                readOnly = true,
-                                placeholder = { Text("Select category...") },
-                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showCategoryDropdown) },
-                                modifier = Modifier.fillMaxWidth().menuAnchor(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedContainerColor = White,
-                                    unfocusedContainerColor = White,
-                                    focusedTextColor = TextPrimary,
-                                    unfocusedTextColor = TextPrimary
-                                )
-                            )
-                            ExposedDropdownMenu(
-                                expanded = showCategoryDropdown,
-                                onDismissRequest = { showCategoryDropdown = false }
-                            ) {
-                                // Search header (must be focusable)
-                                Box(
-                                    modifier = Modifier.padding(
-                                        horizontal = 12.dp,
-                                        vertical = 8.dp
-                                    )
-                                ) {
-                                    OutlinedTextField(
-                                        value = categoryQuery,
-                                        onValueChange = { categoryQuery = it },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Default.Search,
-                                                contentDescription = null
-                                            )
-                                        },
-                                        placeholder = { Text("Search category...") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedContainerColor = White,
-                                            unfocusedContainerColor = White,
-                                            focusedTextColor = TextPrimary,
-                                            unfocusedTextColor = TextPrimary
-                                        )
+                        
+                        OutlinedTextField(
+                            value = if (showCategoryDropdown) categoryQuery else category,
+                            onValueChange = { 
+                                if (!showCategoryDropdown) {
+                                    showCategoryDropdown = true
+                                }
+                                categoryQuery = it
+                            },
+                            placeholder = { Text("Select category...") },
+                            trailingIcon = { 
+                                IconButton(onClick = { showCategoryDropdown = !showCategoryDropdown }) {
+                                    Icon(
+                                        if (showCategoryDropdown) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = "Dropdown"
                                     )
                                 }
-                                Divider(color = Gray200)
-                                DropdownMenuItem(
-                                    text = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                Icons.Default.Add,
-                                                contentDescription = null,
-                                                tint = Blue600
-                                            )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = White,
+                                unfocusedContainerColor = White,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            )
+                        )
+                        
+                        if (showCategoryDropdown) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = BgCard),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                            ) {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 200.dp)
+                                ) {
+                                    item {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    showCategoryDropdown = false
+                                                    showAddCategoryDialog = true
+                                                    categoryQuery = ""
+                                                }
+                                                .padding(16.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = null, tint = Blue600)
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                "+ Add new category",
-                                                color = Blue600,
-                                                fontWeight = FontWeight.Bold
-                                            )
+                                            Text("+ Add new category", color = Blue600, fontWeight = FontWeight.Bold)
                                         }
-                                    },
-                                    onClick = { showAddCategoryDialog = true }
-                                )
-                                filteredCategories.forEach { c ->
-                                    DropdownMenuItem(
-                                        text = { Text(c) },
-                                        onClick = {
-                                            category = c
-                                            showCategoryDropdown = false
+                                    }
+                                    items(filteredCategories) { c ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    category = c
+                                                    showCategoryDropdown = false
+                                                    categoryQuery = ""
+                                                }
+                                                .padding(16.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(c)
                                         }
-                                    )
+                                    }
                                 }
                             }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // Vendor dropdown (search + add new)
+                        // Vendor dropdown with inline search
                         Text("VENDOR (OPTIONAL)", style = MaterialTheme.typography.labelSmall)
                         Spacer(modifier = Modifier.height(6.dp))
-                        ExposedDropdownMenuBox(
-                            expanded = showVendorDropdown,
-                            onExpandedChange = { showVendorDropdown = !showVendorDropdown }
-                        ) {
-                            OutlinedTextField(
-                                value = selectedVendorName,
-                                onValueChange = {},
-                                readOnly = true,
-                                placeholder = { Text("Select vendor...") },
-                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showVendorDropdown) },
-                                modifier = Modifier.fillMaxWidth().menuAnchor(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedContainerColor = White,
-                                    unfocusedContainerColor = White,
-                                    focusedTextColor = TextPrimary,
-                                    unfocusedTextColor = TextPrimary
-                                )
-                            )
-                            ExposedDropdownMenu(
-                                expanded = showVendorDropdown,
-                                onDismissRequest = { showVendorDropdown = false }
-                            ) {
-                                // Search header (must be focusable)
-                                Box(
-                                    modifier = Modifier.padding(
-                                        horizontal = 12.dp,
-                                        vertical = 8.dp
-                                    )
-                                ) {
-                                    OutlinedTextField(
-                                        value = vendorQuery,
-                                        onValueChange = { vendorQuery = it },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Default.Search,
-                                                contentDescription = null
-                                            )
-                                        },
-                                        placeholder = { Text("Search vendor...") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedContainerColor = White,
-                                            unfocusedContainerColor = White,
-                                            focusedTextColor = TextPrimary,
-                                            unfocusedTextColor = TextPrimary
-                                        )
+                        
+                        OutlinedTextField(
+                            value = if (showVendorDropdown) vendorQuery else selectedVendorName,
+                            onValueChange = { 
+                                if (!showVendorDropdown) {
+                                    showVendorDropdown = true
+                                }
+                                vendorQuery = it
+                            },
+                            placeholder = { Text("Select vendor...") },
+                            trailingIcon = { 
+                                IconButton(onClick = { showVendorDropdown = !showVendorDropdown }) {
+                                    Icon(
+                                        if (showVendorDropdown) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = "Dropdown"
                                     )
                                 }
-                                Divider(color = Gray200)
-                                DropdownMenuItem(
-                                    text = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                Icons.Default.Add,
-                                                contentDescription = null,
-                                                tint = Blue600
-                                            )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = White,
+                                unfocusedContainerColor = White,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            )
+                        )
+                        
+                        if (showVendorDropdown) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = BgCard),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                            ) {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 200.dp)
+                                ) {
+                                    item {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    showVendorDropdown = false
+                                                    showAddVendorDialog = true
+                                                    vendorQuery = ""
+                                                }
+                                                .padding(16.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = null, tint = Blue600)
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                "+ Add new vendor",
-                                                color = Blue600,
-                                                fontWeight = FontWeight.Bold
-                                            )
+                                            Text("+ Add new vendor", color = Blue600, fontWeight = FontWeight.Bold)
                                         }
-                                    },
-                                    onClick = { showAddVendorDialog = true }
-                                )
-                                filteredVendors.forEach { v ->
-                                    DropdownMenuItem(
-                                        text = { Text(v.name) },
-                                        onClick = {
-                                            selectedVendorId = v.id
-                                            showVendorDropdown = false
+                                    }
+                                    items(filteredVendors) { v ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    selectedVendorId = v.id
+                                                    showVendorDropdown = false
+                                                    vendorQuery = ""
+                                                }
+                                                .padding(16.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column {
+                                                Text(v.name)
+                                                if (v.phone.isNotBlank()) {
+                                                    Text(
+                                                        v.phone,
+                                                        color = TextSecondary,
+                                                        fontSize = 12.sp
+                                                    )
+                                                }
+                                            }
                                         }
-                                    )
+                                    }
                                 }
                             }
                         }

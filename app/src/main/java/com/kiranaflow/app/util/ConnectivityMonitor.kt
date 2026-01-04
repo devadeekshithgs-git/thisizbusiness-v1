@@ -9,11 +9,65 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 
-class ConnectivityMonitor(context: Context) {
-    private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
-    val isOnline: Flow<Boolean> = callbackFlow {
+object ConnectivityMonitor {
+    
+    private val _isOnline = MutableStateFlow(false)
+    val isOnline: StateFlow<Boolean> = _isOnline
+    
+    private val connectivityListeners = mutableListOf<(Boolean) -> Unit>()
+    
+    /**
+     * Initialize the connectivity monitor
+     */
+    fun initialize(context: Context) {
+        // Start monitoring in background
+        GlobalScope.launch {
+            createConnectivityFlow(context).collect { isOnlineValue ->
+                _isOnline.value = isOnlineValue
+                notifyListeners(isOnlineValue)
+            }
+        }
+    }
+    
+    /**
+     * Check if currently online (synchronous)
+     */
+    fun isOnlineNow(): Boolean {
+        return _isOnline.value
+    }
+    
+    /**
+     * Add a listener for connectivity changes
+     */
+    fun addOnConnectivityChangedListener(listener: (Boolean) -> Unit) {
+        connectivityListeners.add(listener)
+    }
+    
+    /**
+     * Remove a connectivity change listener
+     */
+    fun removeOnConnectivityChangedListener(listener: (Boolean) -> Unit) {
+        connectivityListeners.remove(listener)
+    }
+    
+    private fun notifyListeners(isOnline: Boolean) {
+        connectivityListeners.forEach { listener ->
+            try {
+                listener(isOnline)
+            } catch (e: Exception) {
+                println("Error in connectivity listener: ${e.message}")
+            }
+        }
+    }
+    
+    private fun createConnectivityFlow(context: Context): Flow<Boolean> = callbackFlow {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        
         fun current(): Boolean {
             val network = cm.activeNetwork ?: return false
             val caps = cm.getNetworkCapabilities(network) ?: return false

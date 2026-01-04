@@ -36,6 +36,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
@@ -45,7 +47,6 @@ import com.kiranaflow.app.ui.screens.home.DashboardViewModel
 import com.kiranaflow.app.ui.components.*
 import com.kiranaflow.app.ui.components.dialogs.DateRangePickerDialog
 import com.kiranaflow.app.ui.theme.*
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.kiranaflow.app.data.local.ShopSettingsStore
@@ -73,7 +74,8 @@ fun HomeScreen(
     viewModel: DashboardViewModel = viewModel(),
     onSettingsClick: () -> Unit = {},
     onViewAllTransactions: () -> Unit = {},
-    onOpenTransaction: (Int) -> Unit = {}
+    onOpenTransaction: (Int) -> Unit = {},
+    onNavigateToReports: () -> Unit = {}
 ) {
     // #region agent log
     com.kiranaflow.app.util.DebugLogger.log("HomeScreen.kt:47", "HomeScreen composable entered", mapOf(), "H6")
@@ -431,6 +433,152 @@ fun HomeScreen(
         
         Spacer(modifier = Modifier.height(24.dp))
 
+        // =================== SECTION 2: RECENT TRANSACTIONS ===================
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Recent Transactions",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                ),
+                color = TextPrimary 
+            )
+            TextButton(onClick = onViewAllTransactions) {
+                Text(
+                    "View All",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Blue600
+                ) 
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            state.recentTransactions.forEach { tx ->
+                TransactionCard(
+                    transaction = tx,
+                    onClick = { onOpenTransaction(tx.id) }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // =================== SECTION 3: PROFIT & LOSS ===================
+        Text(
+            text = "Profit & Loss",
+            fontWeight = FontWeight.Bold,
+            color = TextPrimary,
+            fontSize = 18.sp,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            PnlCard(
+                privacyKey = PnlPrivacyKey.REVENUE,
+                label = "Revenue",
+                amount = state.revenue,
+                icon = Icons.Default.AccountBalance,
+                valueColor = Blue600,
+                bg = BgPrimary,
+                showInfoIcon = true,
+                onInfoClick = {
+                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.REVENUE) null else PnlInfoKey.REVENUE
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            AnimatedVisibility(
+                visible = expandedPnlInfo == PnlInfoKey.REVENUE,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                PnlInfoInlineCard(
+                    text = "Revenue = money you earned.\n\nWe add up all Sales + Income transactions. We ignore customer/vendor \"Payment …\" entries so it doesn't get counted twice."
+                )
+            }
+
+            EquationSymbolRow("−")
+
+            PnlCard(
+                privacyKey = PnlPrivacyKey.COGS,
+                label = "Stock Cost (COGS)",
+                amount = state.cogs,
+                icon = Icons.Default.Inventory2,
+                valueColor = AlertOrange,
+                bg = BgPrimary,
+                showInfoIcon = true,
+                onInfoClick = {
+                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.COGS) null else PnlInfoKey.COGS
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            AnimatedVisibility(
+                visible = expandedPnlInfo == PnlInfoKey.COGS,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                PnlInfoInlineCard(
+                    text = "Stock Cost (COGS) = cost of items you sold.\n\nPackets/Pieces: cost price (per piece/packet) × pieces sold.\nLoose items: cost price per kg × kg sold.\n\nWeight is stored and calculated in kg across the app."
+                )
+            }
+
+            EquationSymbolRow("−")
+
+            PnlCard(
+                privacyKey = PnlPrivacyKey.EXPENSE,
+                label = "Expense",
+                amount = state.expense,
+                icon = Icons.Default.ArrowOutward,
+                valueColor = LossRed,
+                bg = BgPrimary,
+                showInfoIcon = true,
+                onInfoClick = {
+                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.EXPENSE) null else PnlInfoKey.EXPENSE
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            AnimatedVisibility(
+                visible = expandedPnlInfo == PnlInfoKey.EXPENSE,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                PnlInfoInlineCard(
+                    text = "Expense = money you spent to run the shop.\n\nWe add up all Expense transactions. We ignore customer/vendor \"Payment …\" entries so it doesn't get counted twice."
+                )
+            }
+
+            EquationSymbolRow("=")
+
+            val isLoss = state.netProfit < 0
+            PnlCard(
+                privacyKey = PnlPrivacyKey.PROFIT,
+                label = if (isLoss) "Loss" else "Profit",
+                amount = state.netProfit,
+                icon = if (isLoss) Icons.Default.TrendingDown else Icons.Default.TrendingUp,
+                valueColor = if (isLoss) LossRed else ProfitGreen,
+                bg = BgPrimary,
+                useAbsoluteAmount = false,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         // Expiring soon alerts
         if (state.expiringItems.isNotEmpty()) {
             Text(
@@ -463,7 +611,7 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(24.dp))
         }
 
-        // =================== SECTION 2: SALES TREND CHART ===================
+        // =================== SECTION 4: SALES TREND CHART ===================
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -602,147 +750,70 @@ fun HomeScreen(
         
         Spacer(modifier = Modifier.height(24.dp))
 
-        // =================== SECTION 3: PROFIT & LOSS ===================
-        Text(
-            text = "Profit & Loss",
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary,
-            fontSize = 18.sp,
-            modifier = Modifier.padding(horizontal = 16.dp)
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Column(
+        // =================== SECTION 5: REPORTS ===================
+        Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 16.dp)
+                .clickable { onNavigateToReports() },
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = BgPrimary),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
         ) {
-            PnlCard(
-                privacyKey = PnlPrivacyKey.REVENUE,
-                label = "Revenue",
-                amount = state.revenue,
-                icon = Icons.Default.AccountBalance,
-                valueColor = Blue600,
-                bg = BgPrimary,
-                showInfoIcon = true,
-                onInfoClick = {
-                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.REVENUE) null else PnlInfoKey.REVENUE
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
-            AnimatedVisibility(
-                visible = expandedPnlInfo == PnlInfoKey.REVENUE,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
             ) {
-                PnlInfoInlineCard(
-                    text = "Revenue = money you earned.\n\nWe add up all Sales + Income transactions. We ignore customer/vendor “Payment …” entries so it doesn’t get counted twice."
-                )
-            }
-
-            EquationSymbolRow("−")
-
-            PnlCard(
-                privacyKey = PnlPrivacyKey.COGS,
-                label = "Stock Cost (COGS)",
-                amount = state.cogs,
-                icon = Icons.Default.Inventory2,
-                valueColor = AlertOrange,
-                bg = BgPrimary,
-                showInfoIcon = true,
-                onInfoClick = {
-                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.COGS) null else PnlInfoKey.COGS
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
-            AnimatedVisibility(
-                visible = expandedPnlInfo == PnlInfoKey.COGS,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically()
-            ) {
-                PnlInfoInlineCard(
-                    text = "Stock Cost (COGS) = cost of items you sold.\n\nPackets/Pieces: cost price (per piece/packet) × pieces sold.\nLoose items: cost price per kg × kg sold.\n\nWeight is stored and calculated in kg across the app."
-                )
-            }
-
-            EquationSymbolRow("−")
-
-            PnlCard(
-                privacyKey = PnlPrivacyKey.EXPENSE,
-                label = "Expense",
-                amount = state.expense,
-                icon = Icons.Default.ArrowOutward,
-                valueColor = LossRed,
-                bg = BgPrimary,
-                showInfoIcon = true,
-                onInfoClick = {
-                    expandedPnlInfo = if (expandedPnlInfo == PnlInfoKey.EXPENSE) null else PnlInfoKey.EXPENSE
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
-            AnimatedVisibility(
-                visible = expandedPnlInfo == PnlInfoKey.EXPENSE,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically()
-            ) {
-                PnlInfoInlineCard(
-                    text = "Expense = money you spent to run the shop.\n\nWe add up all Expense transactions. We ignore customer/vendor “Payment …” entries so it doesn’t get counted twice."
-                )
-            }
-
-            EquationSymbolRow("=")
-
-            val isLoss = state.netProfit < 0
-            PnlCard(
-                privacyKey = PnlPrivacyKey.PROFIT,
-                label = if (isLoss) "Loss" else "Profit",
-                amount = state.netProfit,
-                icon = if (isLoss) Icons.Default.TrendingDown else Icons.Default.TrendingUp,
-                valueColor = if (isLoss) LossRed else ProfitGreen,
-                bg = BgPrimary,
-                useAbsoluteAmount = false,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        // =================== SECTION 4: RECENT TRANSACTIONS ===================
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Recent Transactions",
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                ),
-                color = TextPrimary 
-            )
-            TextButton(onClick = onViewAllTransactions) {
-                Text(
-                    "View All",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Blue600
-                ) 
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            state.recentTransactions.forEach { tx ->
-                TransactionCard(
-                    transaction = tx,
-                    onClick = { onOpenTransaction(tx.id) }
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Blue600.copy(alpha = 0.1f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Description,
+                                contentDescription = null,
+                                tint = Blue600,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Reports",
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "Export business data & analytics",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    
+                    IconButton(
+                        onClick = onNavigateToReports
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowForward,
+                            contentDescription = "Go to Reports",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             }
         }
 

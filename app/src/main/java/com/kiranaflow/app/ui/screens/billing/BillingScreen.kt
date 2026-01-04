@@ -2,6 +2,8 @@ package com.kiranaflow.app.ui.screens.billing
 
 import android.os.Build
 import android.speech.tts.TextToSpeech
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +31,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -51,6 +54,7 @@ import com.kiranaflow.app.ui.components.KiranaButton
 import com.kiranaflow.app.ui.components.KiranaCard
 import com.kiranaflow.app.ui.components.KiranaInput
 import com.kiranaflow.app.ui.components.ValleyTopBar
+import com.kiranaflow.app.ui.components.SwipeToCheckoutButton
 import com.kiranaflow.app.ui.components.SwipeToConfirmButton
 import com.kiranaflow.app.ui.components.dialogs.CompletePaymentModal
 import com.kiranaflow.app.ui.theme.*
@@ -74,6 +78,8 @@ import com.kiranaflow.app.util.ReceiptRenderData
 import com.kiranaflow.app.util.ReceiptRenderItem
 import android.widget.Toast
 import com.kiranaflow.app.ui.screens.scanner.ScanMode
+import com.kiranaflow.app.data.local.CustomerEntity
+import kotlinx.coroutines.flow.collectLatest
 
 // Save/restore scanner overlay state across configuration changes (e.g., landscape rotation).
 private val BillingScanOverlayStateSaver = androidx.compose.runtime.saveable.Saver<BillingScanOverlayState, List<Any?>>(
@@ -102,7 +108,7 @@ private val BillingScanOverlayStateSaver = androidx.compose.runtime.saveable.Sav
 )
 
 @Composable
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalAnimationApi::class)
 fun BillingScreen(
     navController: NavController,
     viewModel: BillingViewModel = viewModel(),
@@ -156,6 +162,7 @@ fun BillingScreen(
     var quickAddNameError by remember { mutableStateOf(false) }
     var quickAddErrorText by remember { mutableStateOf<String?>(null) }
     var stockBlockedIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var isFlashEnabled by remember { mutableStateOf(false) }
 
     // Enhanced swipe button handler with state management
     val scope = rememberCoroutineScope()
@@ -339,6 +346,37 @@ fun BillingScreen(
             else Modifier
 
         if (screenMode == "BILL") {
+            // Track previous session for content transition animations
+            val previousActiveSessionId = remember { mutableStateOf(activeSessionId) }
+            val isSessionChanging = remember(activeSessionId) {
+                val changing = previousActiveSessionId.value != activeSessionId
+                if (changing) {
+                    previousActiveSessionId.value = activeSessionId
+                }
+                changing
+            }
+            
+            AnimatedContent(
+                targetState = "BILL",
+                transitionSpec = {
+                    slideInHorizontally(
+                        initialOffsetX = { -it },
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessLow
+                        )
+                    ) + fadeIn(
+                        animationSpec = tween(400, easing = EaseOutQuart)
+                    ) with slideOutHorizontally(
+                        targetOffsetX = { it },
+                        animationSpec = tween(300, easing = EaseInQuart)
+                    ) + fadeOut(
+                        animationSpec = tween(300, easing = EaseInQuart)
+                    )
+                },
+                label = "BillMode"
+            ) { _ ->
+            
             Column(modifier = Modifier.fillMaxSize().then(contentFadeModifier)) {
                 val listState = rememberLazyListState()
                 LazyColumn(
@@ -429,16 +467,19 @@ fun BillingScreen(
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Column(modifier = Modifier.padding(8.dp)) {
+                                    // Debug: Show search query and results count
+                                    Log.d("BillingSearch", "Query: '$searchQuery', Results count: ${searchResults.size}")
+                                    
                                     if (searchResults.isEmpty()) {
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clickable {
-                                                    quickAddName = searchQuery.trim()
-                                                    quickAddPrice = ""
-                                                    quickAddStock = ""
-                                                    quickAddNameError = false
-                                                    showQuickAddProduct = true
+                                                    Log.d("BillingSearch", "Navigating to inventory with prefill: ${searchQuery.trim()}")
+                                                    // Navigate first; then write to the *current* entry (now inventory) to avoid backstack lookup races.
+                                                    navController.navigate("inventory") { launchSingleTop = true; restoreState = true }
+                                                    navController.currentBackStackEntry?.savedStateHandle?.set("prefill_name", searchQuery.trim())
+                                                    navController.currentBackStackEntry?.savedStateHandle?.set("return_to", "bill")
                                                 }
                                                 .padding(12.dp),
                                             verticalAlignment = Alignment.CenterVertically
@@ -478,133 +519,181 @@ fun BillingScreen(
                         }
                     }
 
-                    if (billItems.isEmpty()) {
-                        item {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(32.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.Inventory2,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(64.dp),
-                                    tint = TextSecondary
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text("Empty Cart", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("Scan or search to start billing", color = TextSecondary, fontSize = 14.sp)
-                            }
-                        }
-                    } else {
-                        items(
-                            items = billItems,
-                            key = { it.item.id }
-                        ) { billItem ->
-                            val isLoose = billItem.item.isLoose
-                            val isBlocked = stockBlockedIds.contains(billItem.item.id)
-                            if (isLoose) {
-                                LaunchedEffect(billItem.item.id) {
-                                    if (looseStepByItemId[billItem.item.id] == null) {
-                                        looseStepByItemId[billItem.item.id] = 0.25
+                    // Animated content wrapper for cart items
+                    item {
+                        AnimatedContent(
+                            targetState = activeSessionId,
+                            transitionSpec = {
+                                if (initialState != targetState) {
+                                    // Slide and fade transition when switching tabs
+                                    slideInHorizontally(
+                                        initialOffsetX = { it },
+                                        animationSpec = tween(300, easing = EaseOutQuart)
+                                    ) + fadeIn(
+                                        animationSpec = tween(300, easing = EaseOutQuart)
+                                    ) with slideOutHorizontally(
+                                        targetOffsetX = { -it },
+                                        animationSpec = tween(300, easing = EaseInQuart)
+                                    ) + fadeOut(
+                                        animationSpec = tween(300, easing = EaseInQuart)
+                                    )
+                                } else {
+                                    fadeIn() with fadeOut()
+                                }
+                            },
+                            label = "CartContent"
+                        ) { sessionId ->
+                            if (billItems.isEmpty()) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(32.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Inventory2,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(64.dp),
+                                        tint = TextSecondary
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text("Empty Cart", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Scan or search to start billing", color = TextSecondary, fontSize = 14.sp)
+                                }
+                            } else {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    billItems.forEach { billItem ->
+                                        val isLoose = billItem.item.isLoose
+                                        val isBlocked = stockBlockedIds.contains(billItem.item.id)
+                                        if (isLoose) {
+                                            LaunchedEffect(billItem.item.id) {
+                                                if (looseStepByItemId[billItem.item.id] == null) {
+                                                    looseStepByItemId[billItem.item.id] = 0.25
+                                                }
+                                            }
+                                        }
+                                        val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 0.25) else 1.0
+                                        val available = if (isLoose) billItem.item.stockKg else billItem.item.stock.toDouble()
+                                        val canInc = (billItem.qty + step) <= available
+                                        val subtotal =
+                                            if (isLoose) billItem.item.pricePerKg * billItem.qty
+                                            else billItem.item.price * billItem.qty
+                                        
+                                        Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                                            CartItemCard(
+                                                itemName = billItem.item.name,
+                                                rackLocation = billItem.item.rackLocation,
+                                                imageUri = billItem.item.imageUri,
+                                                qty = billItem.qty,
+                                                isLoose = isLoose,
+                                                pricePerKg = billItem.item.pricePerKg,
+                                                unitPrice = billItem.item.price,
+                                                subtotal = subtotal,
+                                                highlightStockIssue = isBlocked,
+                                                selectedStepKg = step,
+                                                onSelectStepKg = { kg ->
+                                                    looseStepByItemId[billItem.item.id] = kg
+                                                    stockBlockedIds = stockBlockedIds - billItem.item.id
+                                                    viewModel.updateItemQuantity(billItem.item.id, kg)
+                                                },
+                                                onCustomWeight = {
+                                                    customWeightForItemId = billItem.item.id
+                                                    customWeightText = String.format("%.3f", billItem.qty).trimEnd('0').trimEnd('.')
+                                                },
+                                                onInc = {
+                                                    if (canInc) {
+                                                        stockBlockedIds = stockBlockedIds - billItem.item.id
+                                                        viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step)
+                                                    } else {
+                                                        // Let ViewModel emit the canonical message.
+                                                        viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step)
+                                                    }
+                                                },
+                                                onDec = {
+                                                    val newQty = billItem.qty - step
+                                                    stockBlockedIds = stockBlockedIds - billItem.item.id
+                                                    if (newQty > 0.0) viewModel.updateItemQuantity(billItem.item.id, newQty)
+                                                    else viewModel.removeItemFromBill(billItem.item.id)
+                                                },
+                                                onDelete = { stockBlockedIds = stockBlockedIds - billItem.item.id; viewModel.removeItemFromBill(billItem.item.id) },
+                                                onEditPrice = {
+                                                    priceEditItem = billItem
+                                                    showPriceEditDialog = true
+                                                }
+                                            )
+                                        }
                                     }
                                 }
-                            }
-                            val step = if (isLoose) (looseStepByItemId[billItem.item.id] ?: 0.25) else 1.0
-                            val available = if (isLoose) billItem.item.stockKg else billItem.item.stock.toDouble()
-                            val canInc = (billItem.qty + step) <= available
-                            val subtotal =
-                                if (isLoose) billItem.item.pricePerKg * billItem.qty
-                                else billItem.item.price * billItem.qty
-                            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                                CartItemCard(
-                                    itemName = billItem.item.name,
-                                    rackLocation = billItem.item.rackLocation,
-                                    imageUri = billItem.item.imageUri,
-                                    qty = billItem.qty,
-                                    isLoose = isLoose,
-                                    pricePerKg = billItem.item.pricePerKg,
-                                    unitPrice = billItem.item.price,
-                                    subtotal = subtotal,
-                                    highlightStockIssue = isBlocked,
-                                    selectedStepKg = step,
-                                    onSelectStepKg = { kg ->
-                                        looseStepByItemId[billItem.item.id] = kg
-                                        stockBlockedIds = stockBlockedIds - billItem.item.id
-                                        viewModel.updateItemQuantity(billItem.item.id, kg)
-                                    },
-                                    onCustomWeight = {
-                                        customWeightForItemId = billItem.item.id
-                                        customWeightText = String.format("%.3f", billItem.qty).trimEnd('0').trimEnd('.')
-                                    },
-                                    onInc = {
-                                        if (canInc) {
-                                            stockBlockedIds = stockBlockedIds - billItem.item.id
-                                            viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step)
-                                        } else {
-                                            // Let ViewModel emit the canonical message.
-                                            viewModel.updateItemQuantity(billItem.item.id, billItem.qty + step)
-                                        }
-                                    },
-                                    onDec = {
-                                        val newQty = billItem.qty - step
-                                        stockBlockedIds = stockBlockedIds - billItem.item.id
-                                        if (newQty > 0.0) viewModel.updateItemQuantity(billItem.item.id, newQty)
-                                        else viewModel.removeItemFromBill(billItem.item.id)
-                                    },
-                                    onDelete = { stockBlockedIds = stockBlockedIds - billItem.item.id; viewModel.removeItemFromBill(billItem.item.id) },
-                                    onEditPrice = {
-                                        priceEditItem = billItem
-                                        showPriceEditDialog = true
-                                    }
-                                )
                             }
                         }
                     }
                 }
 
-                // Fixed footer: always sits right above the bottom menu bar (no big gap).
-                if (billItems.isNotEmpty()) {
-                    Card(
+                // Checkout button fixed to end of list items
+                AnimatedVisibility(
+                    visible = billItems.isNotEmpty(),
+                    enter = slideInVertically(
+                        initialOffsetY = { it },
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessLow
+                        )
+                    ) + fadeIn(
+                        animationSpec = tween(300, easing = EaseOutQuart)
+                    ),
+                    exit = slideOutVertically(
+                        targetOffsetY = { it },
+                        animationSpec = tween(200, easing = EaseInQuart)
+                    ) + fadeOut(
+                        animationSpec = tween(200, easing = EaseInQuart)
+                    )
+                ) {
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
-                            .padding(bottom = bottomNavSafeGap),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = BgPrimary)
+                            .padding(bottom = bottomNavSafeGap)
                     ) {
-                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("TOTAL", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
-                                Text("₹${totalAmount.toInt()}", fontSize = 28.sp, fontWeight = FontWeight.Black, color = TextPrimary)
+                        SwipeToCheckoutButton(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            totalAmount = totalAmount,
+                            itemCount = billItems.size,
+                            enabled = billItems.isNotEmpty(),
+                            onSwipeComplete = {
+                                // Call existing checkout logic
+                                showCheckoutDialog = true
                             }
-                            Spacer(modifier = Modifier.height(10.dp))
-                            SwipeToConfirmButton(
-                                onSwipeComplete = handleSwipeComplete,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(56.dp),
-                                resetTrigger = swipeButtonResetTrigger,
-                                enabled = billItems.isNotEmpty(),
-                                isLoading = isSwipeButtonLoading,
-                                isSuccess = isSwipeButtonSuccess,
-                                isError = isSwipeButtonError,
-                                errorMessage = swipeButtonErrorMessage
-                            )
-                        }
+                        )
                     }
-                } else {
-                    Spacer(modifier = Modifier.height(bottomNavSafeGap))
                 }
             }
+            }
         } else {
+            // EXPENSE MODE with smooth transitions
+            AnimatedContent(
+                targetState = "EXPENSE",
+                transitionSpec = {
+                    slideInHorizontally(
+                        initialOffsetX = { it },
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessLow
+                        )
+                    ) + fadeIn(
+                        animationSpec = tween(400, easing = EaseOutQuart)
+                    ) with slideOutHorizontally(
+                        targetOffsetX = { -it },
+                        animationSpec = tween(300, easing = EaseInQuart)
+                    ) + fadeOut(
+                        animationSpec = tween(300, easing = EaseInQuart)
+                    )
+                },
+                label = "ExpenseMode"
+            ) { _ ->
             // EXPENSE MODE: keep it scrollable; header+mode switch are part of scroll.
             Column(
                 modifier = Modifier
@@ -1007,6 +1096,7 @@ fun BillingScreen(
                     )
                 }
             }
+            }
         }
     }
 
@@ -1017,22 +1107,10 @@ fun BillingScreen(
             billItems = billItems,
             scanMode = viewModel.scanMode,
             onSetScanMode = viewModel::setScanMode,
-            onSetQty = { itemId, qty ->
-                viewModel.updateItemQuantity(itemId, qty)
-            },
-            onDismiss = { 
-                showBillingScanner = false
-                scanOverlayState = BillingScanOverlayState.Idle
-            },
-            onBarcodeScanned = { barcode ->
-                // When user scans again, clear previous NotFound state immediately.
-                if (scanOverlayState is BillingScanOverlayState.NotFound) scanOverlayState = BillingScanOverlayState.Idle
-                viewModel.addItemToCartByBarcode(barcode)
-            },
-            onQrScanned = { payload ->
-                if (scanOverlayState is BillingScanOverlayState.NotFound) scanOverlayState = BillingScanOverlayState.Idle
-                viewModel.addItemToCartByQrPayload(payload)
-            },
+            onSetQty = { itemId, qty -> viewModel.updateItemQuantity(itemId, qty) },
+            onDismiss = { showBillingScanner = false; scanOverlayState = BillingScanOverlayState.Idle },
+            onBarcodeScanned = { barcode -> viewModel.addItemToCartByBarcode(barcode) },
+            onQrScanned = { qr -> viewModel.addItemToCartByQrPayload(qr) },
             onAddToInventory = { barcode ->
                 showBillingScanner = false
                 scanOverlayState = BillingScanOverlayState.Idle
@@ -1050,7 +1128,9 @@ fun BillingScreen(
                     navController.currentBackStackEntry?.savedStateHandle?.set("barcode", barcode)
                     navController.currentBackStackEntry?.savedStateHandle?.set("return_to", "bill")
                 }
-            }
+            },
+            isFlashEnabled = isFlashEnabled,
+            onFlashToggle = { isFlashEnabled = it }
         )
     }
 
@@ -1354,82 +1434,158 @@ private fun DigitalBillPromptDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val paymentLabel = if (paymentMode == "CREDIT") "PAY_LATER" else "PAID"
-    val normalizedPhone = customerPhone.filter { it.isDigit() }
+    val scope = rememberCoroutineScope()
+    var isSending by remember { mutableStateOf(false) }
+    
+    // Create BillSnapshot from existing data
+    val billSnapshot = remember(shopName, customerName, customerPhone, billNo, paymentMode, items, totalAmount, createdAtMillis) {
+        val mockShopSettings = com.kiranaflow.app.data.local.ShopSettings(
+            shopName = shopName,
+            shopPhone = shopPhone
+        )
+        val mockCustomer = com.kiranaflow.app.data.local.CustomerEntity(
+            name = customerName,
+            phone = customerPhone,
+            type = "CUSTOMER"
+        )
+        val mockEvent = BillSavedEvent(
+            txId = billNo.toIntOrNull() ?: 0,
+            customerId = null,
+            paymentMode = paymentMode,
+            totalAmount = totalAmount,
+            createdAtMillis = createdAtMillis,
+            items = items
+        )
+        
+        com.kiranaflow.app.billing.factory.BillSnapshotFactory.createFromBillingEvent(
+            event = mockEvent,
+            shopSettings = mockShopSettings,
+            customer = mockCustomer
+        )
+    }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Send digital bill?", fontWeight = FontWeight.Bold) },
+        onDismissRequest = { if (!isSending) onDismiss() },
+        title = { 
+            Text(
+                text = "Send Digital Bill via WhatsApp?", 
+                fontWeight = FontWeight.Bold
+            ) 
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = customerName.ifBlank { "Customer" } + (if (normalizedPhone.isNotBlank()) " • $normalizedPhone" else ""),
-                    color = TextSecondary,
-                    fontSize = 12.sp
+                    text = "Customer: ${customerName.ifBlank { "Walk-in Customer" }}",
+                    color = TextPrimary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
                 )
+                if (customerPhone.isNotBlank()) {
+                    Text(
+                        text = "Phone: ${customerPhone}",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
                 Text(
-                    text = "A receipt image will be generated and shared.",
+                    text = "A professional GST-compliant bill will be generated and sent directly to the customer's WhatsApp.",
                     color = TextSecondary,
                     fontSize = 12.sp
                 )
+                if (isSending) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = KiranaGreen
+                        )
+                        Text(
+                            text = "Generating bill and opening WhatsApp...",
+                            color = TextSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    val receiptData = ReceiptRenderData(
-                        shopName = shopName.ifBlank { "SHOP" },
-                        shopPhone = shopPhone.trim().ifBlank { null },
-                        billNo = billNo,
-                        customerName = customerName.trim().ifBlank { null },
-                        customerPhone = normalizedPhone.ifBlank { null },
-                        paymentLabel = paymentLabel,
-                        txTypeLabel = "Sales",
-                        createdAtMillis = createdAtMillis,
-                        items = items.map {
-                            ReceiptRenderItem(
-                                itemId = it.itemId,
-                                name = it.name,
-                                qty = it.qty,
-                                unitPrice = it.unitPrice,
-                                lineTotal = it.lineTotal
+                    if (isSending) return@Button
+                    
+                    isSending = true
+                    scope.launch {
+                        try {
+                            // Validate bill first
+                            val validation = com.kiranaflow.app.billing.send.WhatsAppShareManager.validateBillForWhatsApp(
+                                bill = billSnapshot,
+                                customerPhone = customerPhone
                             )
-                        },
-                        totalAmount = totalAmount
-                    )
-                    val bmp = ReceiptImageRenderer.renderToBitmap(receiptData)
-                    val uri = ReceiptImageRenderer.savePngToCache(
-                        context = context,
-                        bitmap = bmp,
-                        fileName = "bill_${billNo}.png"
-                    )
-                    // Prefer WhatsApp if installed; otherwise fall back to chooser.
-                    runCatching {
-                        ReceiptImageRenderer.shareImage(
-                            context = context,
-                            imageUri = uri,
-                            chooserTitle = "Send bill",
-                            packageName = "com.whatsapp"
-                        )
-                    }.onFailure {
-                        ReceiptImageRenderer.shareImage(
-                            context = context,
-                            imageUri = uri,
-                            chooserTitle = "Send bill"
-                        )
+                            
+                            when (validation) {
+                                is com.kiranaflow.app.billing.send.ValidationResult.Valid -> {
+                                    // Send bill
+                                    val result = com.kiranaflow.app.billing.send.WhatsAppShareManager.sendBillToWhatsApp(
+                                        context = context,
+                                        bill = billSnapshot,
+                                        customerPhone = customerPhone
+                                    )
+                                    
+                                    // Handle result
+                                    com.kiranaflow.app.common.ErrorHandler.handleWhatsAppShareError(
+                                        context = context,
+                                        result = result
+                                    )
+                                }
+                                is com.kiranaflow.app.billing.send.ValidationResult.Invalid -> {
+                                    com.kiranaflow.app.common.ErrorHandler.handleValidationError(
+                                        context = context,
+                                        result = validation
+                                    )
+                                }
+                            }
+                        } catch (e: Exception) {
+                            com.kiranaflow.app.common.ErrorHandler.handleBillingError(
+                                context = context,
+                                error = e,
+                                operation = "Digital bill sharing"
+                            )
+                        } finally {
+                            isSending = false
+                            onDismiss()
+                        }
                     }
-                    onDismiss()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = ProfitGreen, contentColor = Color.White),
+                enabled = !isSending,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSending) Color.Gray else ProfitGreen, 
+                    contentColor = Color.White
+                ),
                 shape = RoundedCornerShape(14.dp)
             ) {
-                Icon(Icons.Default.Send, contentDescription = null)
+                if (isSending) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                } else {
+                    Icon(Icons.Default.Send, contentDescription = null)
+                }
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Send", fontWeight = FontWeight.Bold)
+                Text(if (isSending) "Sending..." else "Send via WhatsApp", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Skip") }
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isSending
+            ) { 
+                Text("Skip") 
+            }
         }
     )
 }
@@ -1444,8 +1600,17 @@ private fun BillingScannerOverlay(
     onDismiss: () -> Unit,
     onBarcodeScanned: (String) -> Unit,
     onQrScanned: (String) -> Unit,
-    onAddToInventory: (String) -> Unit
+    onAddToInventory: (String) -> Unit,
+    isFlashEnabled: Boolean = false,
+    onFlashToggle: (Boolean) -> Unit = {}
 ) {
+    var localFlashEnabled by remember { mutableStateOf(isFlashEnabled) }
+    
+    // Update local state when parameter changes
+    LaunchedEffect(isFlashEnabled) {
+        localFlashEnabled = isFlashEnabled
+    }
+    
     val scannedLine = when (overlayState) {
         is BillingScanOverlayState.Added -> billItems.firstOrNull { it.item.id == overlayState.itemId }
         else -> null
@@ -1482,14 +1647,20 @@ private fun BillingScannerOverlay(
             scanMode = scanMode,
             backgroundColor = Color.Transparent,
             showCloseButton = false,
-            showViewfinder = false
+            showViewfinder = false,
+            showFlashToggle = true,
+            isFlashEnabled = localFlashEnabled,
+            onFlashToggle = { enabled -> 
+                localFlashEnabled = enabled
+                onFlashToggle(enabled)
+            }
         )
 
-        // QR toggle positioned above the scan frame, horizontally centered
+        // QR toggle positioned at fixed position from top
         Surface(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .offset(y = (frameHeight / 2 + 40.dp))
+                .offset(y = 40.dp)
                 .padding(horizontal = 16.dp),
             shape = RoundedCornerShape(14.dp),
             color = Color.Black.copy(alpha = 0.55f)

@@ -53,6 +53,8 @@ import com.kiranaflow.app.ui.screens.vendors.ItemsToReorderScreen
 import com.kiranaflow.app.ui.screens.vendors.TotalPayablesScreen
 import com.kiranaflow.app.ui.screens.vendors.VendorDetailScreen
 import com.kiranaflow.app.ui.screens.vendors.VendorsScreen 
+import com.kiranaflow.app.ui.screens.reports.ReportsScreen
+import com.kiranaflow.app.ui.screens.reports.ReportDetailScreen
 import com.kiranaflow.app.ui.theme.KiranaTheme
 import com.kiranaflow.app.util.DebugLogger
 import com.kiranaflow.app.util.ConnectivityMonitor
@@ -209,7 +211,7 @@ fun KiranaApp() {
 
     // Milestone D groundwork: global connectivity + outbox state (shared across UI).
     val ctx = LocalContext.current
-    val monitor = remember(ctx) { ConnectivityMonitor(ctx) }
+    val monitor = ConnectivityMonitor // Use the singleton directly
     val db = remember(ctx) { KiranaDatabase.getDatabase(ctx) }
     val repo = remember(ctx) { KiranaRepository(db) }
     val appPrefsStore = remember(ctx) { AppPrefsStore(ctx) }
@@ -332,7 +334,8 @@ fun KiranaApp() {
                     HomeScreen(
                         onSettingsClick = { showSettingsDrawer = true },
                         onViewAllTransactions = { navController.navigate("transactions") },
-                        onOpenTransaction = { txId -> navController.navigate("transaction/$txId") }
+                        onOpenTransaction = { txId -> navController.navigate("transaction/$txId") },
+                        onNavigateToReports = { navController.navigate("reports") }
                     )
                 }
                 composable("transactions") {
@@ -377,6 +380,13 @@ fun KiranaApp() {
                     // #region agent log
                     DebugLogger.log("MainActivity.kt:149", "Navigating to inventory screen", mapOf(), "H4")
                     // #endregion
+                    Log.d("MainActivity", "Inventory screen navigated with arguments: ${it.arguments?.keySet()}")
+                    it.arguments?.getString("prefill_name")?.let { prefillName ->
+                        Log.d("MainActivity", "Found prefill_name: '$prefillName'")
+                    }
+                    it.arguments?.getString("return_to")?.let { returnTo ->
+                        Log.d("MainActivity", "Found return_to: '$returnTo'")
+                    }
                     InventoryScreen(
                         navController = navController,
                         triggerAddItem = quickAction == "inventory",
@@ -447,10 +457,53 @@ fun KiranaApp() {
                         onClose = { navController.popBackStack("bill", false) }
                     )
                 }
+                
+                // Reports screens
+                composable("reports") {
+                    ReportsScreen(
+                        onBackClick = { navController.popBackStack() },
+                        onReportClick = { reportId -> 
+                            val reportTitle = getReportTitle(reportId)
+                            navController.navigate("reports/$reportId?title=$reportTitle")
+                        }
+                    )
+                }
+                composable("reports/{reportId}?title={title}") { backStackEntry ->
+                    val reportId = backStackEntry.arguments?.getString("reportId") ?: ""
+                    val title = backStackEntry.arguments?.getString("title") ?: "Report"
+                    ReportDetailScreen(
+                        reportId = reportId,
+                        reportTitle = title,
+                        onBackClick = { navController.popBackStack() }
+                    )
+                }
             }
             }
 
-            SettingsDrawer(isOpen = showSettingsDrawer, onClose = { showSettingsDrawer = false })
+            SettingsDrawer(
+                isOpen = showSettingsDrawer, 
+                onClose = { showSettingsDrawer = false }
+            )
         }
+    }
+}
+
+// Helper function to get report titles
+fun getReportTitle(reportId: String): String {
+    return when (reportId) {
+        "product_report" -> "Product Report"
+        "sales_report" -> "Sales Report"
+        "receivables_due" -> "Receivables - Due List"
+        "payable_due" -> "Payable - Due List"
+        "purchase_report" -> "Purchase Report"
+        "cashbook_reports" -> "Cashbook Reports"
+        "customer_transactions" -> "Customer Transactions Report"
+        "customer_list" -> "Customer List"
+        "sales_report_bills" -> "Sales Report"
+        "sales_daywise" -> "Sales Day-wise Report"
+        "stocks_summary" -> "Stocks Summary Report"
+        "supplier_transactions" -> "Supplier Transaction Report"
+        "supplier_list" -> "Supplier/Vendor List"
+        else -> "Report"
     }
 }

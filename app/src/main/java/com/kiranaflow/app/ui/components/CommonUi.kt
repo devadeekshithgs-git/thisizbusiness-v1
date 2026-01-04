@@ -1,5 +1,6 @@
 package com.kiranaflow.app.ui.components
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -719,6 +720,7 @@ fun SearchField(
     placeholder: String = "Search...",
     modifier: Modifier = Modifier
 ) {
+    Log.d("SearchField", "SearchField rendered with query: '$query'")
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -739,7 +741,10 @@ fun SearchField(
             Spacer(modifier = Modifier.width(12.dp))
             BasicTextField(
                 value = query,
-                onValueChange = onQueryChange,
+                onValueChange = { newValue ->
+                    Log.d("SearchField", "BasicTextField onValueChange: '$query' -> '$newValue'")
+                    onQueryChange(newValue)
+                },
                 textStyle = TextStyle(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,

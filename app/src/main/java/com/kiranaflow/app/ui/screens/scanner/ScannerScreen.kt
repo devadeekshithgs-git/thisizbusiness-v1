@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -91,7 +93,10 @@ fun ScannerScreen(
     showCloseButton: Boolean = true,
     showViewfinder: Boolean = true,
     viewfinderWidth: Dp = 280.dp,
-    viewfinderHeight: Dp = 200.dp
+    viewfinderHeight: Dp = 200.dp,
+    showFlashToggle: Boolean = false,
+    isFlashEnabled: Boolean = false,
+    onFlashToggle: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -119,6 +124,7 @@ fun ScannerScreen(
     var imageAnalysis by remember { mutableStateOf<ImageAnalysis?>(null) }
     var scanner by remember { mutableStateOf<BarcodeScanner?>(null) }
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
 
     // Dedicated analyzer executor (avoid creating a new executor per recomposition).
     val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
@@ -163,7 +169,10 @@ fun ScannerScreen(
                             .build()
 
                         cameraProvider?.unbindAll()
-                        cameraProvider?.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
+                        camera = cameraProvider?.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
+
+                        // Enable flash control if supported
+                        camera?.cameraControl?.enableTorch(isFlashEnabled)
 
                         isCameraStarting = false
                         Log.d("ScannerScreen", "Camera bound successfully")
@@ -195,6 +204,16 @@ fun ScannerScreen(
             imageAnalysis = null
             scanner = null
             cameraProvider = null
+        }
+    }
+
+    // Handle flash toggle changes
+    LaunchedEffect(isFlashEnabled, camera) {
+        try {
+            camera?.cameraControl?.enableTorch(isFlashEnabled)
+            Log.d("ScannerScreen", "Flash ${if (isFlashEnabled) "enabled" else "disabled"}")
+        } catch (e: Exception) {
+            Log.e("ScannerScreen", "Failed to toggle flash", e)
         }
     }
 
@@ -310,7 +329,10 @@ fun ScannerScreen(
             showCloseButton = showCloseButton,
             showViewfinder = showViewfinder,
             viewfinderWidth = viewfinderWidth,
-            viewfinderHeight = viewfinderHeight
+            viewfinderHeight = viewfinderHeight,
+            showFlashToggle = showFlashToggle,
+            isFlashEnabled = isFlashEnabled,
+            onFlashToggle = onFlashToggle
         )
 
         // lightweight feedback overlay (useful esp. for Billing continuous scan)
@@ -346,8 +368,12 @@ private fun ScannerOverlay(
     showCloseButton: Boolean,
     showViewfinder: Boolean,
     viewfinderWidth: Dp,
-    viewfinderHeight: Dp
+    viewfinderHeight: Dp,
+    showFlashToggle: Boolean = false,
+    isFlashEnabled: Boolean = false,
+    onFlashToggle: (Boolean) -> Unit = {}
 ) {
+    Box(modifier = Modifier.fillMaxSize()) {
     val viewfinderSize = with(LocalDensity.current) { ComposeSize(viewfinderWidth.toPx(), viewfinderHeight.toPx()) }
 
     if (showViewfinder) {
@@ -425,10 +451,24 @@ private fun ScannerOverlay(
             Icon(Icons.Default.Close, contentDescription = "Close Scanner")
         }
     }
-    
-    Box(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(16.dp), contentAlignment = Alignment.TopEnd) {
-        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.4f)) {
-            Text("SCANNER ACTIVE", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+
+    // Flash toggle button - positioned on the left side
+    if (showFlashToggle) {
+        IconButton(
+            onClick = { onFlashToggle(!isFlashEnabled) },
+            modifier = Modifier.statusBarsPadding().padding(16.dp).align(Alignment.TopStart),
+            colors = IconButtonDefaults.iconButtonColors(
+                containerColor = Color.Black.copy(alpha = 0.4f),
+                contentColor = if (isFlashEnabled) Color.Yellow else Color.White
+            )
+        ) {
+            Icon(
+                if (isFlashEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                contentDescription = if (isFlashEnabled) "Disable Flash" else "Enable Flash"
+            )
         }
+    }
+    
+    // SCANNER ACTIVE text removed
     }
 } 

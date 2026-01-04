@@ -23,6 +23,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kiranaflow.app.data.local.ItemEntity
 import com.kiranaflow.app.data.local.PartyEntity
 import com.kiranaflow.app.ui.components.KiranaInput
+import com.kiranaflow.app.ui.components.SearchField
 import com.kiranaflow.app.ui.components.dialogs.VendorDetailSheet
 import com.kiranaflow.app.ui.theme.*
 import java.time.Instant
@@ -58,11 +59,10 @@ fun ItemsToReorderScreen(
         )
 
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            KiranaInput(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = "Search items...",
-                icon = Icons.Default.Search
+            SearchField(
+                query = query,
+                onQueryChange = { query = it },
+                placeholder = "Search items..."
             )
         }
 
@@ -182,11 +182,10 @@ fun TotalPayablesScreen(
         )
 
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            KiranaInput(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = "Search vendors...",
-                icon = Icons.Default.Search
+            SearchField(
+                query = query,
+                onQueryChange = { query = it },
+                placeholder = "Search vendors..."
             )
         }
 

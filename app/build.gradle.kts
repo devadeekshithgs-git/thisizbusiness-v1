@@ -157,6 +157,12 @@ dependencies {
     // Swipe-Animated-Button library for order confirmation
     implementation("com.github.maxwell-kimaiyo:Swipe-Animated-Button:0.1.0")
 
+    // Supabase Android SDK for Direct Integration
+    // Using a simpler approach with HTTP client for now
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")

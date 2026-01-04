@@ -279,4 +279,11 @@ class InventoryViewModel(application: Application) : AndroidViewModel(applicatio
         if (quantity <= 0) return
         adjustStock(item, quantity)
     }
+
+    /**
+     * Get a Flow of an item by ID for real-time updates.
+     */
+    fun getItemByIdFlow(itemId: Int): Flow<ItemEntity?> {
+        return itemDao.getItemByIdFlow(itemId)
+    }
 }

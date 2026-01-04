@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kiranaflow.app.ui.components.SearchField
 import com.kiranaflow.app.ui.components.dialogs.DateRangePickerDialog
 import com.kiranaflow.app.ui.theme.*
 import java.text.SimpleDateFormat
@@ -100,20 +101,14 @@ fun TransactionsScreen(
         ) {
             // Search field as first item
             item {
-                OutlinedTextField(
-                    value = state.query,
-                    onValueChange = viewModel::setQuery,
-                    modifier = Modifier.fillMaxWidth(),
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    placeholder = { Text("Search by customer/vendor, product, title...") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = White,
-                        unfocusedContainerColor = White,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
+                Box(modifier = Modifier.padding(horizontal = 0.dp)) {
+                    SearchField(
+                        query = state.query,
+                        onQueryChange = viewModel::setQuery,
+                        placeholder = "Search by customer/vendor, product, title...",
+                        modifier = Modifier.fillMaxWidth()
                     )
-                )
+                }
             }
 
             // Results count and sync status

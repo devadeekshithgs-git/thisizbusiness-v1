@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Store
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,6 +51,7 @@ fun SolidTopBar(
     containerColor: Color = BgPrimary,
     subtitleAlphaMultiplier: Float = 1f,
     tonalElevation: androidx.compose.ui.unit.Dp = 0.dp,
+    showLogo: Boolean = false,
     actions: @Composable RowScope.(SolidTopBarActionColors) -> Unit = { colors ->
         SettingsIconButton(
             onClick = onSettings,
@@ -95,6 +100,15 @@ fun SolidTopBar(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    if (showLogo) {
+                        Icon(
+                            painter = painterResource(id = com.kiranaflow.app.R.drawable.this_iz_biz_logo),
+                            contentDescription = "App Logo",
+                            tint = headerContentColor,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
                     Text(title, fontWeight = FontWeight.Black, fontSize = 18.sp, color = headerContentColor)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(subtitle, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = headerSubtitleColor)

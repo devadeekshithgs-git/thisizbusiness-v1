@@ -3,55 +3,46 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Leaf body (approximation of provided logo) -->
-    <path
-        android:fillColor="#58B957"
-        android:pathData="M22,68 C24,44 42,28 66,24 C82,21 96,30 98,44 C100,58 88,72 72,78 C52,86 30,82 22,68 Z" />
-    <path
-        android:fillColor="#3FA94A"
-        android:pathData="M28,68 C30,50 44,38 62,34 C77,31 89,38 91,48 C93,58 84,69 70,73 C52,78 36,77 28,68 Z" />
-
-    <!-- Leaf outline -->
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#2F4F3A"
-        android:strokeWidth="3.2"
-        android:strokeLineJoin="round"
-        android:strokeLineCap="round"
-        android:pathData="M22,68 C24,44 42,28 66,24 C82,21 96,30 98,44 C100,58 88,72 72,78 C52,86 30,82 22,68 Z" />
-
-    <!-- Inner ring -->
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#A6E3A6"
-        android:strokeWidth="3"
-        android:pathData="M66,52 m-16,0 a16,16 0 1,0 32,0 a16,16 0 1,0 -32,0" />
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#7BD37B"
-        android:strokeWidth="3"
-        android:pathData="M66,52 m-11,0 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0" />
-
-    <!-- Arrow -->
+    
+    <!-- Bar Chart -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M32,62 L60,44 L60,52 L78,52 L78,58 L60,58 L60,66 Z" />
+        android:pathData="M20,75 L20,85 L30,85 L30,75 Z" />
     <path
-        android:fillColor="#00000000"
-        android:strokeColor="#2F4F3A"
-        android:strokeWidth="2.6"
-        android:strokeLineJoin="round"
-        android:strokeLineCap="round"
-        android:pathData="M32,62 L60,44 L60,52 L78,52 L78,58 L60,58 L60,66 Z" />
-
-    <!-- Small dots near tip -->
+        android:fillColor="#FFFFFF"
+        android:pathData="M35,65 L35,85 L45,85 L45,65 Z" />
     <path
-        android:fillColor="#2F4F3A"
-        android:pathData="M88,30 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,55 L50,85 L60,85 L60,55 Z" />
     <path
-        android:fillColor="#2F4F3A"
-        android:pathData="M92,34 m-1.6,0 a1.6,1.6 0 1,0 3.2,0 a1.6,1.6 0 1,0 -3.2,0" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M65,45 L65,85 L75,85 L75,45 Z" />
+    
+    <!-- Upward Arrow -->
     <path
-        android:fillColor="#2F4F3A"
-        android:pathData="M86,36 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M80,35 L85,25 L90,35 L87,35 L87,50 L83,50 L83,35 Z" />
+    
+    <!-- Leaf -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M25,40 C30,25 45,20 60,22 C75,24 85,35 83,45 C81,55 70,60 55,58 C40,56 28,50 25,40 Z" />
+    <path
+        android:fillColor="#2E7D32"
+        android:pathData="M30,40 C34,28 46,24 58,25 C70,26 78,35 76,42 C74,49 65,53 52,51 C39,49 30,44 30,40 Z" />
+    
+    <!-- Book -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M45,70 L45,85 L75,85 L75,70 C75,70 60,72 45,70 Z" />
+    <path
+        android:fillColor="#F5F5F5"
+        android:pathData="M60,70 L60,85 L75,85 L75,70 C75,70 67,71 60,70 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M45,70 C45,70 60,72 75,70" />
+    <path
+        android:fillColor="#E0E0E0"
+        android:pathData="M60,70 L60,85" />
+    
 </vector>
